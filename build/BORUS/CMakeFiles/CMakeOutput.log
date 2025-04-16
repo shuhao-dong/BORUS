@@ -32,40 +32,21 @@ Copyright (C) 2022 Free Software Foundation, Inc.
 This is free software; see the source for copying conditions.  There is NO
 warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-Performing C SOURCE FILE Test check_fmacro_prefix_map__Users_gw23523_Documents_nordic_BORUS_CMAKE_SOURCE_DIR_C__nostartfiles__nostdlib__isystem___opt_nordic_ncs_toolchains_f8037e9b83_opt_zephyr_sdk_arm_zephyr_eabi_bin____lib_gcc_arm_zephyr_eabi_12_2_0_include___isystem___opt_nordic_ncs_toolchains_f8037e9b83_opt_zephyr_sdk_arm_zephyr_eabi_bin____lib_gcc_arm_zephyr_eabi_12_2_0_include_fixed___Wl___unresolved_symbols_ignore_in_object_files__Wl___entry_0 succeeded with the following output:
-Change Dir: /Users/gw23523/Documents/nordic/BORUS/build/BORUS/CMakeFiles/CMakeTmp
-
-Run Build Command(s):/opt/nordic/ncs/toolchains/f8037e9b83/bin/ninja cmTC_06a6f && [1/2] Building C object CMakeFiles/cmTC_06a6f.dir/src.c.obj
-[2/2] Linking C executable cmTC_06a6f
-
-
-Source file was:
-int main(void) { return 0; }
 Determining if files stdatomic.h exist passed with the following output:
 Change Dir: /Users/gw23523/Documents/nordic/BORUS/build/BORUS/CMakeFiles/CMakeTmp
 
-Run Build Command(s):/opt/nordic/ncs/toolchains/f8037e9b83/bin/ninja cmTC_29f36 && [1/2] Building C object CMakeFiles/cmTC_29f36.dir/HAVE_STDATOMIC_H.c.obj
-[2/2] Linking C executable cmTC_29f36
-arm-zephyr-eabi-gcc: warning: CMakeFiles/cmTC_29f36.dir/HAVE_STDATOMIC_H.c.obj: linker input file unused because linking not done
+Run Build Command(s):/opt/nordic/ncs/toolchains/f8037e9b83/bin/ninja cmTC_b9710 && [1/2] Building C object CMakeFiles/cmTC_b9710.dir/HAVE_STDATOMIC_H.c.obj
+[2/2] Linking C executable cmTC_b9710
+arm-zephyr-eabi-gcc: warning: CMakeFiles/cmTC_b9710.dir/HAVE_STDATOMIC_H.c.obj: linker input file unused because linking not done
 
 
 
 Determining if files fcntl.h exist passed with the following output:
 Change Dir: /Users/gw23523/Documents/nordic/BORUS/build/BORUS/CMakeFiles/CMakeTmp
 
-Run Build Command(s):/opt/nordic/ncs/toolchains/f8037e9b83/bin/ninja cmTC_b77f1 && [1/2] Building C object CMakeFiles/cmTC_b77f1.dir/HAVE_FCNTL_H.c.obj
-[2/2] Linking C executable cmTC_b77f1
-arm-zephyr-eabi-gcc: warning: CMakeFiles/cmTC_b77f1.dir/HAVE_FCNTL_H.c.obj: linker input file unused because linking not done
+Run Build Command(s):/opt/nordic/ncs/toolchains/f8037e9b83/bin/ninja cmTC_3d2f8 && [1/2] Building C object CMakeFiles/cmTC_3d2f8.dir/HAVE_FCNTL_H.c.obj
+[2/2] Linking C executable cmTC_3d2f8
+arm-zephyr-eabi-gcc: warning: CMakeFiles/cmTC_3d2f8.dir/HAVE_FCNTL_H.c.obj: linker input file unused because linking not done
 
 
 
-Performing C SOURCE FILE Test check_fmacro_prefix_map__Users_gw23523_Documents_nordic_BORUS_CMAKE_SOURCE_DIR_C__c__nostartfiles__nostdlib__isystem___opt_nordic_ncs_toolchains_f8037e9b83_opt_zephyr_sdk_arm_zephyr_eabi_bin____lib_gcc_arm_zephyr_eabi_12_2_0_include___isystem___opt_nordic_ncs_toolchains_f8037e9b83_opt_zephyr_sdk_arm_zephyr_eabi_bin____lib_gcc_arm_zephyr_eabi_12_2_0_include_fixed___Wl___unresolved_symbols_ignore_in_object_files__Wl___entry_0 succeeded with the following output:
-Change Dir: /Users/gw23523/Documents/nordic/BORUS/build/BORUS/CMakeFiles/CMakeTmp
-
-Run Build Command(s):/opt/nordic/ncs/toolchains/f8037e9b83/bin/ninja cmTC_a21ea && [1/2] Building C object CMakeFiles/cmTC_a21ea.dir/src.c.obj
-[2/2] Linking C executable cmTC_a21ea
-arm-zephyr-eabi-gcc: warning: CMakeFiles/cmTC_a21ea.dir/src.c.obj: linker input file unused because linking not done
-
-
-Source file was:
-int main(void) { return 0; }

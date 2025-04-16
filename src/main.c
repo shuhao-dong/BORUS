@@ -156,11 +156,13 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 #define HEARTBEAT_TIMEOUT K_SECONDS(90) // If no heartbeat for 90s, assume away
 #define BLE_ADV_INTERVAL_MIN 32
 #define BLE_ADV_INTERVAL_MAX 33
-#define SENSOR_DATA_PACKET_SIZE 21 // Size calculated from prepare_packet
+#define SENSOR_DATA_PACKET_SIZE 20 // Size calculated from prepare_packet
 #define SCAN_INTERVAL K_MINUTES(1)
 #define SCAN_WINDOW K_SECONDS(5)
-#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D" // TORUS_1
-#define PRESSURE_BASE_PA 90000			   // Base offset in Pascals
+#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D" 	// TORUS_1
+#define PRESSURE_BASE_PA 90000			   	// Base offset in Pascals
+#define TEMPERATURE_LOW_LIMIT	30		   	// -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT	40		   	// +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
@@ -589,9 +591,11 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 
 	int offset = 0;
 
-	// Temperature (int16_t, x100) - Store as signed
-	sys_put_le16((int16_t)(data->temperature), &buffer[offset]);
-	offset += 2;
+	// Temperature: Assume we only need -30 to 40 degree with 1 degree C precision
+	int temp_C = round((float)data->temperature / 100.0f);
+	temp_C = CLAMP(temp_C, -TEMPERATURE_LOW_LIMIT, TEMPERATURE_HIGH_LIMIT); 
+	uint8_t encoded_temp = (uint8_t)(temp_C + TEMPERATURE_LOW_LIMIT); 
+	buffer[offset++] = encoded_temp;
 
 	// Pressure (Convert to uint16_t offset Pascals)
 	uint32_t pressure_pa_x10 = data->pressure;

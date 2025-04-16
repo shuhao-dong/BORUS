@@ -1,6 +1,6 @@
 {
     "format-version": 1,
-    "time": 1744808310,
+    "time": 1744812240,
     "files": [
         {
             "type": "application",
@@ -11,9 +11,9 @@
             "slot_index_primary": "1",
             "slot_index_secondary": "2",
             "version_MCUBOOT": "0.1.0+0",
-            "size": 287520,
+            "size": 290772,
             "file": "BORUS.bin",
-            "modtime": 1744808282
+            "modtime": 1744812225
         },
         {
             "type": "application",
@@ -26,7 +26,7 @@
             "version": "1",
             "size": 200428,
             "file": "ipc_radio.bin",
-            "modtime": 1744808309
+            "modtime": 1744812240
         }
     ],
     "name": "BORUS"

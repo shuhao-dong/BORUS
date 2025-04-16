@@ -852,10 +852,11 @@
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/zephyr/drivers/timer/CMakeFiles/drivers__timer.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/install/local.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/list_install_components.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/rebuild_cache.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/install/strip.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/install.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/app_commit_h.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/zephyr_commit_h.dir
-/Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/rebuild_cache.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/edit_cache.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/ncs_commit_h.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/modules/nrf/CMakeFiles/ncs_version_h.dir
