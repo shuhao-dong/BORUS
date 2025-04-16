@@ -1,0 +1,42 @@
+sample:
+  name: BORUS Sensor Logger
+tests:
+  sample.basic.blinky:
+    tags:
+      - sensor
+      - BLE
+      - USB
+      - filesystem
+      - log
+      - LED
+      - gpio
+    filter: >
+      dt_nodelabel_enabled("bmi270") and
+      dt_nodelabel_enabled("bme680") and 
+      dt_chosen_enabled("zephyr,usbd")
+    depends_on: 
+      - gpio
+      - spi
+      - i2c
+      - sensor
+      - bluetooth
+      - log
+      - flash
+      - fs
+      - littlefs
+      - usb_device_stack
+      - msc 
+    harness: console
+
+    harness_config:
+      type: multi_line
+      ordered: false
+      regex:
+        - "Thingy Application Starting"
+        - "Bluetooth enabled"
+        - "File system mounted"
+        - "Entering main loop"
+
+    integration_platforms:
+      - frdm_k64f
+      - Thingy53

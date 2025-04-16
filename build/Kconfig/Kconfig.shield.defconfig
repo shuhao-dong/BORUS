@@ -1,0 +1,2 @@
+osource "/Users/gw23523/Documents/nordic/my_boards/boards/shields/*/Kconfig.defconfig"
+osource "/opt/nordic/ncs/v2.7.0/nrf/boards/shields/*/Kconfig.defconfig"

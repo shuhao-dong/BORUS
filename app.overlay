@@ -1,0 +1,17 @@
+&spi3{
+    bmi270: spi-dev-bmi270@1 {
+		compatible = "bosch,bmi270";
+		status = "okay";
+		spi-max-frequency = <8000000>;
+		reg = <1>;
+		irq-gpios=<&gpio0 23 GPIO_ACTIVE_HIGH>; 
+	};
+};
+
+// Choose the existing cdc acm node for mcumgr 
+/ {
+	chosen {
+		zephyr,uart-mcumgr = &cdc_acm_uart;
+		nordic,pm-ext-flash = &mx25r64;
+	};
+};

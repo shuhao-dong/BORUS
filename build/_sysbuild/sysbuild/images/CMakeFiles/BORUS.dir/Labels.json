@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/CMakeFiles/BORUS"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/CMakeFiles/BORUS.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/CMakeFiles/BORUS-complete.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/BORUS-prefix/src/BORUS-stamp/BORUS-build.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/BORUS-prefix/src/BORUS-stamp/BORUS-configure.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/BORUS-prefix/src/BORUS-stamp/BORUS-download.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/BORUS-prefix/src/BORUS-stamp/BORUS-install.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/BORUS-prefix/src/BORUS-stamp/BORUS-mkdir.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/BORUS-prefix/src/BORUS-stamp/BORUS-patch.rule"
+		},
+		{
+			"file" : "/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/BORUS-prefix/src/BORUS-stamp/BORUS-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"BORUS"
+		],
+		"name" : "BORUS"
+	}
+}

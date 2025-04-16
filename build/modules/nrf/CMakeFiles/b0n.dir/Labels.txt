@@ -1,0 +1,13 @@
+# Target labels
+ b0n
+# Source files and their labels
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/CMakeFiles/b0n
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/CMakeFiles/b0n.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/CMakeFiles/b0n-complete.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/b0n-prefix/src/b0n-stamp/b0n-build.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/b0n-prefix/src/b0n-stamp/b0n-configure.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/b0n-prefix/src/b0n-stamp/b0n-download.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/b0n-prefix/src/b0n-stamp/b0n-install.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/b0n-prefix/src/b0n-stamp/b0n-mkdir.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/b0n-prefix/src/b0n-stamp/b0n-patch.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/b0n-prefix/src/b0n-stamp/b0n-update.rule

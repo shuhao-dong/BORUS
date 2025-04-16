@@ -1,0 +1,43 @@
+app:
+  address: 0x1008800
+  end_address: 0x1040000
+  orig_span: &id001
+  - ipc_radio
+  region: flash_primary
+  size: 0x37800
+  span: *id001
+b0n:
+  address: 0x1000000
+  end_address: 0x1008580
+  placement:
+    after:
+    - start
+  region: flash_primary
+  size: 0x8580
+b0n_container:
+  address: 0x1000000
+  end_address: 0x1008800
+  orig_span: &id002
+  - b0n
+  - provision
+  region: flash_primary
+  size: 0x8800
+  span: *id002
+ipc_radio:
+  address: 0x1008800
+  end_address: 0x1040000
+  region: flash_primary
+  size: 0x37800
+provision:
+  address: 0x1008580
+  end_address: 0x1008800
+  placement:
+    after:
+    - b0n
+  region: flash_primary
+  size: 0x280
+sram_primary:
+  address: 0x21000000
+  end_address: 0x21010000
+  region: sram_primary
+  size: 0x10000

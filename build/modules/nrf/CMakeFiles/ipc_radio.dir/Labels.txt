@@ -1,0 +1,13 @@
+# Target labels
+ ipc_radio
+# Source files and their labels
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/CMakeFiles/ipc_radio
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/CMakeFiles/ipc_radio.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/CMakeFiles/ipc_radio-complete.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/ipc_radio-prefix/src/ipc_radio-stamp/ipc_radio-build.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/ipc_radio-prefix/src/ipc_radio-stamp/ipc_radio-configure.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/ipc_radio-prefix/src/ipc_radio-stamp/ipc_radio-download.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/ipc_radio-prefix/src/ipc_radio-stamp/ipc_radio-install.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/ipc_radio-prefix/src/ipc_radio-stamp/ipc_radio-mkdir.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/ipc_radio-prefix/src/ipc_radio-stamp/ipc_radio-patch.rule
+/Users/gw23523/Documents/nordic/BORUS/build/modules/nrf/ipc_radio-prefix/src/ipc_radio-stamp/ipc_radio-update.rule

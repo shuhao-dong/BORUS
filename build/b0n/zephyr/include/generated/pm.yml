@@ -1,0 +1,6 @@
+b0n:
+  size: 0x8580
+  placement:
+    after: start
+b0n_container:
+  span: [b0n, provision]

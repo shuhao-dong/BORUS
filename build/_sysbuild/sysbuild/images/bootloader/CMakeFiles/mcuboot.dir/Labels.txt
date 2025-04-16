@@ -1,0 +1,13 @@
+# Target labels
+ mcuboot
+# Source files and their labels
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/CMakeFiles/mcuboot
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/CMakeFiles/mcuboot.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/CMakeFiles/mcuboot-complete.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/mcuboot-prefix/src/mcuboot-stamp/mcuboot-build.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/mcuboot-prefix/src/mcuboot-stamp/mcuboot-configure.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/mcuboot-prefix/src/mcuboot-stamp/mcuboot-download.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/mcuboot-prefix/src/mcuboot-stamp/mcuboot-install.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/mcuboot-prefix/src/mcuboot-stamp/mcuboot-mkdir.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/mcuboot-prefix/src/mcuboot-stamp/mcuboot-patch.rule
+/Users/gw23523/Documents/nordic/BORUS/build/_sysbuild/sysbuild/images/bootloader/mcuboot-prefix/src/mcuboot-stamp/mcuboot-update.rule

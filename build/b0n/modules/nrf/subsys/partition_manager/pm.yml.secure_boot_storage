@@ -1,0 +1,4 @@
+provision:
+  size: 0x280
+  placement:
+    after: b0n

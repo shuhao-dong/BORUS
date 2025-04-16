@@ -1,0 +1,14 @@
+default: BORUS
+build_dir: /Users/gw23523/Documents/nordic/BORUS/build
+domains:
+  - name: BORUS
+    build_dir: /Users/gw23523/Documents/nordic/BORUS/build/BORUS
+  - name: mcuboot
+    build_dir: /Users/gw23523/Documents/nordic/BORUS/build/mcuboot
+  - name: ipc_radio
+    build_dir: /Users/gw23523/Documents/nordic/BORUS/build/ipc_radio
+  - name: b0n
+    build_dir: /Users/gw23523/Documents/nordic/BORUS/build/b0n
+flash_order:
+  - ipc_radio
+  - BORUS
