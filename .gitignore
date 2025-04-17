@@ -1,0 +1,25 @@
+# Zephyr build directory
+build/
+
+# Optional but recommended Zephyr ignores:
+build_*/
+*.bin
+*.hex
+*.elf
+*.map
+*.a
+*.o
+*.obj
+*.pyc
+__pycache__/
+zephyr/zephyr.* # Zephyr kernel binary files
+
+# IDE specific files (examples)
+.vscode/
+*.suo
+*.user
+*.sln.docstates
+
+# Other common ignores
+*.log
+*~
