@@ -23,3 +23,5 @@ zephyr/zephyr.* # Zephyr kernel binary files
 # Other common ignores
 *.log
 *~
+
+.DS_Store
