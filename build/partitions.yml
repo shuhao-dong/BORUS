@@ -73,9 +73,9 @@ mcuboot_sram:
   address: 0x20002000
   end_address: 0x20080000
   orig_span: &id003
+  - tfm_sram
   - sram_primary
   - rpmsg_nrf53_sram
-  - tfm_sram
   region: sram_primary
   size: 0x7e000
   span: *id003

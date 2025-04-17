@@ -1,4 +1,4 @@
-# Install script for directory: /opt/nordic/ncs/v2.7.0/nrf/subsys/nrf_security/src/drivers
+# Install script for directory: /opt/nordic/ncs/v2.7.0/nrf/subsys/nrf_security/src/drivers/nrf_cc3xx
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -35,25 +35,5 @@ endif()
 # Set default install directory permissions.
 if(NOT DEFINED CMAKE_OBJDUMP)
   set(CMAKE_OBJDUMP "/opt/nordic/ncs/toolchains/f8037e9b83/opt/zephyr-sdk/arm-zephyr-eabi/bin/arm-zephyr-eabi-objdump")
-endif()
-
-if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  # Include the install script for the subdirectory.
-  include("/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx_platform/cmake_install.cmake")
-endif()
-
-if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  # Include the install script for the subdirectory.
-  include("/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx/cmake_install.cmake")
-endif()
-
-if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  # Include the install script for the subdirectory.
-  include("/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/zephyr/cmake_install.cmake")
-endif()
-
-if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  # Include the install script for the subdirectory.
-  include("/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_oberon/cmake_install.cmake")
 endif()
 

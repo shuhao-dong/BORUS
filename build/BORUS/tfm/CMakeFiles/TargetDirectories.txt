@@ -119,6 +119,12 @@
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx_platform/CMakeFiles/list_install_components.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx_platform/CMakeFiles/rebuild_cache.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx_platform/CMakeFiles/edit_cache.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx/CMakeFiles/install/local.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx/CMakeFiles/install/strip.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx/CMakeFiles/install.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx/CMakeFiles/list_install_components.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx/CMakeFiles/rebuild_cache.dir
+/Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/nrf_cc3xx/CMakeFiles/edit_cache.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/zephyr/CMakeFiles/install/local.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/zephyr/CMakeFiles/install/strip.dir
 /Users/gw23523/Documents/nordic/BORUS/build/BORUS/tfm/secure_fw/partitions/crypto/mbedcrypto/nrf_security_src/drivers/zephyr/CMakeFiles/install.dir

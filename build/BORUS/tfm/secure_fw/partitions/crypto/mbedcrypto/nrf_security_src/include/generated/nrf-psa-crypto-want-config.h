@@ -27,7 +27,7 @@
 /* #undef PSA_WANT_ALG_CFB */
 /* #undef PSA_WANT_ALG_CHACHA20_POLY1305 */
 /* #undef PSA_WANT_ALG_CMAC */
-/* #undef PSA_WANT_ALG_CTR */
+#define PSA_WANT_ALG_CTR                                   1
 /* #undef PSA_WANT_ALG_CTR_DRBG */
 /* #undef PSA_WANT_ALG_DETERMINISTIC_ECDSA */
 /* #undef PSA_WANT_ALG_ECB_NO_PADDING */
@@ -115,7 +115,7 @@
 /* #undef PSA_WANT_ECC_TWISTED_EDWARDS_255 */
 /* #undef PSA_WANT_ECC_TWISTED_EDWARDS_448 */
 #define PSA_WANT_GENERATE_RANDOM                           1
-/* #undef PSA_WANT_KEY_TYPE_AES */
+#define PSA_WANT_KEY_TYPE_AES                              1
 /* #undef PSA_WANT_KEY_TYPE_ARC4 */
 /* #undef PSA_WANT_KEY_TYPE_ARIA */
 /* #undef PSA_WANT_KEY_TYPE_CAMELLIA */

@@ -41,6 +41,7 @@
 #include <pm_config.h>
 #include <zephyr/usb/class/usbd_msc.h>
 #include <errno.h>
+#include <psa/crypto.h>
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
@@ -156,7 +157,9 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 #define HEARTBEAT_TIMEOUT K_SECONDS(90) // If no heartbeat for 90s, assume away
 #define BLE_ADV_INTERVAL_MIN 32
 #define BLE_ADV_INTERVAL_MAX 33
-#define SENSOR_DATA_PACKET_SIZE 20 // Size calculated from prepare_packet
+#define SENSOR_DATA_PACKET_SIZE 20 			// Size calculated from prepare_packet
+#define NONCE_LEN	8
+#define ENC_ADV_PAYLOAD_LEN	(NONCE_LEN + SENSOR_DATA_PACKET_SIZE)
 #define SCAN_INTERVAL K_MINUTES(1)
 #define SCAN_WINDOW K_SECONDS(5)
 #define TARGET_AP_ADDR "2C:CF:67:89:E0:5D" 	// TORUS_1
@@ -195,7 +198,8 @@ static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 );
 
 // Buffer for dynamic manufacturer data in advertisement
-static uint8_t manuf_data_buffer[SENSOR_DATA_PACKET_SIZE];
+static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
+static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN]; 
 
 // --- Advertising Data (Primary Packet) ---
 struct bt_data ad[] = {
@@ -203,7 +207,7 @@ struct bt_data ad[] = {
 
 // --- Scan Response Data (Secondary Packet, sent on request) ---
 struct bt_data sd[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_data_buffer, sizeof(manuf_data_buffer))};
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))};
 
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
@@ -622,7 +626,7 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 	offset += 4;	// 4 bytes
 
 	/* Battery percentage */
-	buffer[offset++] = data->battery; // 1 byte
+	buffer[offset++] = data->battery;	// 1 byte
 
 	// Check total size
 	if (offset != SENSOR_DATA_PACKET_SIZE)
@@ -736,6 +740,95 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
+static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
+{	
+	int ret;
+	static bool psa_ready;
+	if (!psa_ready)
+	{	
+		ret = psa_crypto_init();
+		if (ret != PSA_SUCCESS)
+		{
+			return ret;
+		}
+		psa_ready = true; 
+	}
+	
+	// Prepare a 128-bit key
+	static const uint8_t aes_key[16] = {
+		0x9F,0x7B,0x25,0xA0,0x68,0x52,0x33,0x1C,
+        0x10,0x42,0x5E,0x71,0x99,0x84,0xC7,0xDD
+	};
+
+	// Import key into the PSA keystore (volatile)
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, 128); 
+	psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE); 
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT); 
+
+	psa_key_id_t kid;
+	ret = psa_import_key(&attr, aes_key, sizeof(aes_key), &kid);
+	if (ret != PSA_SUCCESS)
+	{	
+		LOG_ERR("Failed to import key settings: %d", ret); 
+		return ret;
+	}
+
+	// Build 8-byte nonce
+	static uint32_t ctr = 0;
+	uint8_t nonce[NONCE_LEN]; 
+	uint32_t t = sys_cpu_to_le32(k_uptime_get_32());
+	memcpy(nonce, &t, 4);
+	memcpy(nonce + 4, &ctr, 4);
+	ctr ++;
+
+	// Run AES-CTR
+	psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
+	psa_status_t st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
+
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to setup cipher encryption: %d", st);
+		return st;
+	}
+
+	st = psa_cipher_set_iv(&op, nonce, NONCE_LEN);
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to setup cipher Nonce: %d", st);
+		return st;
+	}
+	
+	size_t written = 0;
+	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
+		out+NONCE_LEN, SENSOR_DATA_PACKET_SIZE, &written); 
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to update plain text: %d", st);
+		return st;
+	}
+	
+	st = psa_cipher_finish(&op, NULL, 0, &written);
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to finish cipher op: %d", st);
+		return st;
+	}
+	
+	psa_cipher_abort(&op);
+	psa_destroy_key(kid);
+
+	if (st != PSA_SUCCESS || written != SENSOR_DATA_PACKET_SIZE)
+	{
+		return -EFAULT;
+	}
+	
+	memcpy(out, nonce, NONCE_LEN); 
+	
+	return 0; 
+}
+
 /**
  * @brief Consumer thread to send data via BLE advertisement or log data to
  * the external flash using littlefs
@@ -829,8 +922,18 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 					log_write_count = 0; // Reset sync counter
 				}
 
-				// Update BLE advertisement
-				prepare_packet(&current_sensor_state, manuf_data_buffer, sizeof(manuf_data_buffer));
+				// Build the 20-byte plain text
+				prepare_packet(&current_sensor_state, manuf_plain, sizeof(manuf_plain));
+
+				// Encrypt to 31-byte buffer
+				ret = encrypt_sensor_block(manuf_plain, manuf_encrypted);
+				if (ret != 0)
+				{
+					LOG_ERR("Encrypt failed - ADV not updated: %d", ret);
+					state_needs_update = false;
+					k_sleep(K_SECONDS(5));
+					continue;
+				}
 
 				// Update the advertising data (non-blocking)
 				ret = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
@@ -1195,6 +1298,13 @@ int main(void)
 	}
 
 	LOG_INF("Step 6: Bluetooth enabled");
+
+	ret = psa_crypto_init();
+	if (ret != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to initialise crypto: %d", ret);
+		return -1;
+	}
 
 	// USB Device Subsystem
 	ret = usb_enable(usb_dc_status_cb); // Register callback

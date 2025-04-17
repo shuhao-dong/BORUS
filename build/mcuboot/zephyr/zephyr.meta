@@ -134,7 +134,7 @@ west:
   - path: /opt/nordic/ncs/v2.7.0/nrf
     revision: 5cb85570ca43bc344d3145c2338128eacf4b48ec
   - path: /opt/nordic/ncs/v2.7.0/zephyr
-    revision: 100befc70c74f7ec83dd8ac3171ee18eeddb4dbd
+    revision: 100befc70c74f7ec83dd8ac3171ee18eeddb4dbd-dirty-off
   - path: /opt/nordic/ncs/v2.7.0/modules/lib/hostap
     revision: 6311fde66f87ac8c8838a2d5fcfe55a498a8682a
   - path: /opt/nordic/ncs/v2.7.0/modules/lib/wfa-qt-control-app
@@ -234,9 +234,9 @@ west:
   - path: /opt/nordic/ncs/v2.7.0/modules/lib/zcbor
     revision: 75d088037eb237b18e7ec1f47c9ce494b9b95aab
 workspace:
-  dirty: false
+  dirty: true
   extra: false
-  'off': false
+  'off': true
 zephyr:
   path: /opt/nordic/ncs/v2.7.0/zephyr
-  revision: 100befc70c74f7ec83dd8ac3171ee18eeddb4dbd
+  revision: 100befc70c74f7ec83dd8ac3171ee18eeddb4dbd-dirty
