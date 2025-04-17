@@ -11,6 +11,8 @@
  * Version: v0.1.0
  *
  * Date: 16/04/2025
+ * 
+ * TBD: BLE encryption, BLE Extended adv 
  */
 
 #include <stdio.h>
