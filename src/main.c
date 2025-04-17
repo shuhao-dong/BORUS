@@ -595,7 +595,7 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 	int temp_C = round((float)data->temperature / 100.0f);
 	temp_C = CLAMP(temp_C, -TEMPERATURE_LOW_LIMIT, TEMPERATURE_HIGH_LIMIT); 
 	uint8_t encoded_temp = (uint8_t)(temp_C + TEMPERATURE_LOW_LIMIT); 
-	buffer[offset++] = encoded_temp;
+	buffer[offset++] = encoded_temp;	// 1 byte
 
 	// Pressure (Convert to uint16_t offset Pascals)
 	uint32_t pressure_pa_x10 = data->pressure;
@@ -608,20 +608,20 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 		pressure_offset = (temp_offset > UINT16_MAX) ? UINT16_MAX : (uint16_t)temp_offset;
 	} // else offset remains 0 (for pressure below base)
 	sys_put_le16(pressure_offset, &buffer[offset]);
-	offset += 2;
+	offset += 2;	// 2 bytes
 
-	/* IMU 6 axis each 2 bytes into 12 bytes */
+	/* IMU data */
 	for (int i = 0; i < 6; i++)
 	{
 		sys_put_le16(data->imu_data[i], &buffer[offset]);
 		offset += 2;
 	} // 12 bytes
 
-	/* Timestamp into 4 bytes */
+	/* Timestamp */
 	sys_put_le32(data->timestamp, &buffer[offset]);
-	offset += 4;
+	offset += 4;	// 4 bytes
 
-	/* Battery percentage into 1 byte */
+	/* Battery percentage */
 	buffer[offset++] = data->battery; // 1 byte
 
 	// Check total size
