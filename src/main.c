@@ -49,16 +49,16 @@ LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 1024
-#define BMP390_HANDLER_STACKSIZE 1024
-#define BLE_LOGGER_THREAD_STACKSIZE 4096
-#define SCANNER_THREAD_STACKSIZE 1024
+#define BMI270_HANDLER_STACKSIZE 		1024
+#define BMP390_HANDLER_STACKSIZE 		1024
+#define BLE_LOGGER_THREAD_STACKSIZE 	4096
+#define SCANNER_THREAD_STACKSIZE 		1024
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 5 // Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 6 // Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 7	  // Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 7 // Lower priority tasks for scan AP heartbeat
+#define BMI270_HANDLER_PRIORITY 		5	// Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 		6	// Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 			7	// Lower priority tasks for BLE and logging
+#define SCANNER_THREAD_PRIORITY 		7 	// Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -77,20 +77,17 @@ static struct k_thread scanner_thread_data;
 // Define the state structure
 typedef enum
 {
-	STATE_INIT,				// Initial state before normal operation
-	STATE_HOME_ADVERTISING, // At home, advertise sensor data
-	STATE_AWAY_LOGGING,		// Away, log sensor data
-	STATE_CHARGING			// USB connected
+	STATE_INIT,					// Initial state before normal operation
+	STATE_HOME_ADVERTISING, 	// At home, advertise sensor data
+	STATE_AWAY_LOGGING,			// Away, log sensor data
+	STATE_CHARGING				// USB connected
 } device_state_t;
 
-// Work item for heartbeat timeout -> Away state
-static struct k_work heartbeat_timeout_work;
-// Work item for USB connect -> CHARGING state
-static struct k_work usb_connect_work;
-// Work item for USB disconnect -> HOME state (or chosen default)
-static struct k_work usb_disconnect_work;
-// Work item for Scan Found AP -> HOME state
-static struct k_work scan_found_ap_work;
+// Define system workqueue for state transition 
+static struct k_work heartbeat_timeout_work;	// Work item for heartbeat timeout -> Away state
+static struct k_work usb_connect_work;			// Work item for USB connect -> CHARGING state
+static struct k_work usb_disconnect_work;		// Work item for USB disconnect -> HOME state (or chosen default)
+static struct k_work scan_found_ap_work;		// Work item for Scan Found AP -> HOME state
 
 // --- Use atomic type for state changes between threads/ISRs
 static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
@@ -112,6 +109,7 @@ typedef struct
 	uint32_t timestamp;
 } imu_payload_t;
 
+// Environmental sensor data structure
 typedef struct
 {
 	uint16_t temperature;
@@ -119,13 +117,14 @@ typedef struct
 	uint32_t timestamp;
 } environment_payload_t;
 
+// Battery voltage data structure 
 typedef struct
 {
 	uint8_t battery;
 	uint32_t timestamp;
 } battery_payload_t;
 
-// Unified message structure
+// Unified message structure for message queue
 typedef struct
 {
 	sensor_msg_type_t type;
@@ -153,40 +152,37 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 1000 / 20
-#define BATTERY_READ_INTERVAL K_MINUTES(30)
-#define HEARTBEAT_TIMEOUT K_SECONDS(90) // If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 32
-#define BLE_ADV_INTERVAL_MAX 33
-#define SENSOR_DATA_PACKET_SIZE 20 // Size calculated from prepare_packet
-#define SCAN_INTERVAL K_MINUTES(1)
-#define SCAN_WINDOW K_SECONDS(5)
-#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D" 	// TORUS_1
-#define PRESSURE_BASE_PA 90000			   	// Base offset in Pascals
-#define TEMPERATURE_LOW_LIMIT	30		   	// -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT	40		   	// +40 degree as the highest temperature of interest
+#define BMP390_READ_INTERVAL 		1000 / 20				// BMP390 sample rate = 20 Hz
+#define BATTERY_READ_INTERVAL 		K_MINUTES(30)			// Battery voltage read interval = 30 minutes
+#define HEARTBEAT_TIMEOUT 			K_SECONDS(90) 			// If no heartbeat for 90s, assume away, enter AWAY state
+#define BLE_ADV_INTERVAL_MIN 		32						// This is the minimum allowed adv interval = 32 * 0.625 = 20 ms
+#define BLE_ADV_INTERVAL_MAX 		33						// Added a small delay to avoid alias = 33 * 0.625 = 20.625 ms
+#define SENSOR_DATA_PACKET_SIZE 	20 						// Size calculated from prepare_packet
+#define SCAN_INTERVAL 				K_MINUTES(1)			// This is how often to perform a scan: every 1 minute
+#define SCAN_WINDOW 				K_SECONDS(5)			// This is how long to scan during that interval: 5 seconds
+#define TARGET_AP_ADDR 				"2C:CF:67:89:E0:5D"		// TORUS_1
+#define PRESSURE_BASE_PA 			90000			   		// Base offset in Pascals
+#define TEMPERATURE_LOW_LIMIT		30		  				// -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT		40		   				// +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
 #define LOG_FILE_PATH "/lfs1/imu_log.bin"
 #define LFS_MOUNT_POINT "/lfs1"
 
-USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00");
+USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00");	// Make sure name "NAND" matches the Kconfig option @ref CONFIG_MASS_STORAGE_DISK_NAME
 
-/* -------------------- BLE Configurations -------------------- */
+/* -------------------- BLE Legacy Configurations -------------------- */
 
-// Define BLE packet structure
+// Define BLE packet structure - Not used in real BLE packet
 typedef struct
 {
-	uint16_t temperature;
+	int16_t temperature;
 	uint32_t pressure;
 	int16_t imu_data[6];
 	uint32_t timestamp;
 	uint8_t battery;
 } ble_packet_t;
-
-#define DEVICE_NAME CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 
 // BLE advertisement parameters
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
@@ -199,13 +195,19 @@ static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 // Buffer for dynamic manufacturer data in advertisement
 static uint8_t manuf_data_buffer[SENSOR_DATA_PACKET_SIZE];
 
-// --- Advertising Data (Primary Packet) ---
-struct bt_data ad[] = {
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN)};
+// Advertising data structure (hold device name and adv type)
+#define DEVICE_NAME 		CONFIG_BT_DEVICE_NAME		// Use the name defined in Kconfig
+#define DEVICE_NAME_LEN 	(sizeof(DEVICE_NAME) - 1)
 
-// --- Scan Response Data (Secondary Packet, sent on request) ---
+struct bt_data ad[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+};
+
+// Scan response data (hold sensor data)
 struct bt_data sd[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_data_buffer, sizeof(manuf_data_buffer))};
+	BT_DATA(BT_DATA_ENCRYPTED_AD_DATA, manuf_data_buffer, sizeof(manuf_data_buffer))
+};
 
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
@@ -717,7 +719,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 		if (sensor_channel_get(dev, SENSOR_CHAN_AMBIENT_TEMP, &temp) == 0 && sensor_channel_get(dev, SENSOR_CHAN_PRESS, &press) == 0)
 		{
 			sensor_message_t msg = {.type = SENSOR_MSG_TYPE_ENVIRONMENT};
-			msg.payload.env.temperature = (uint16_t)(sensor_value_to_double(&temp) * 100);
+			msg.payload.env.temperature = (int16_t)(sensor_value_to_double(&temp) * 100);
 			msg.payload.env.pressure = (uint32_t)(sensor_value_to_double(&press) * 100 * 10);
 			msg.payload.env.timestamp = k_uptime_get_32();
 
