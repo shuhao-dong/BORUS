@@ -366,7 +366,6 @@ static void enter_state(device_state_t new_state)
 	switch (old_state)
 	{
 	case STATE_HOME_ADVERTISING:
-		stop_advertising();						// stops advertising via BLE
 		k_timer_stop(&heartbeat_timeout_timer); // stops checking for loss of AP
 		break;
 	case STATE_AWAY_LOGGING:
@@ -390,6 +389,7 @@ static void enter_state(device_state_t new_state)
 	case STATE_AWAY_LOGGING:
 		LOG_INF("Entering Away Log Mode");
 		set_imu_rate(false); // Set low IMU rate and low-power mode
+		stop_advertising();	 // Stop advertising
 		// Heartbeat timer should be stopped already from leaving HOME
 		break;
 	case STATE_CHARGING:
