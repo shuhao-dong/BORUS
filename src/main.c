@@ -42,8 +42,13 @@
 #include <zephyr/usb/class/usbd_msc.h>
 #include <errno.h>
 #include <psa/crypto.h>
+#include <psa/crypto_values.h>
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
+
+/* -------------------- Key ID for encryption -------------------- */
+
+static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; 
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -200,7 +205,6 @@ static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 // Buffer for dynamic manufacturer data in advertisement
 static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
 static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN]; 
-static uint8_t m_iv[16]; 
 
 // --- Advertising Data (Primary Packet) ---
 struct bt_data ad[] = {
@@ -390,6 +394,7 @@ static void enter_state(device_state_t new_state)
 		LOG_INF("Entering Home Adv Mode");
 		set_imu_rate(true);													   // Set high IMU rate and performance mode
 		start_advertising();												   // Start BLE advertisement
+		k_msleep(50); 
 		k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT); // Start timer to track in-home
 		break;
 	case STATE_AWAY_LOGGING:
@@ -400,6 +405,7 @@ static void enter_state(device_state_t new_state)
 	case STATE_CHARGING:
 		// Ensure other activities are stopped
 		LOG_INF("Entering Charging Mode");
+		k_msleep(50); 
 		stop_advertising();
 		k_timer_stop(&heartbeat_timeout_timer);
 		break;
@@ -741,80 +747,93 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
-
-
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 {	
-	int ret;
-	
-	// Prepare a 128-bit key
-	static const uint8_t aes_key[16] = {
-		0x9F,0x7B,0x25,0xA0,0x68,0x52,0x33,0x1C,
-        0x10,0x42,0x5E,0x71,0x99,0x84,0xC7,0xDD
-	};
-
-	// Import key into the PSA keystore (volatile)
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT); 
-	psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE);
-	psa_set_key_algorithm(&attr, PSA_ALG_CTR); 
-	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
-	psa_set_key_bits(&attr, 128); 
-	 
-	psa_key_id_t kid;
-	ret = psa_import_key(&attr, aes_key, sizeof(aes_key), &kid);
-	if (ret != PSA_SUCCESS)
-	{	
-		LOG_ERR("Failed to import key settings: %d", ret); 
-		return ret;
+	if (g_aes_key_id == PSA_KEY_ID_NULL)
+	{
+		LOG_ERR("AES key handle is not valid");
+		return -EPERM; 
 	}
+	psa_key_id_t kid = g_aes_key_id; 
 
-	psa_reset_key_attributes(&attr); 
-	LOG_INF("AES key imported successfully"); 
+	psa_status_t st;
+	int ret = 0;
+	
+	static uint64_t nonce_counter = 0;
+	uint8_t nonce[NONCE_LEN]; 
 
-	// Run AES-CTR
-	uint32_t olen; 
+	nonce_counter ++;
+	sys_put_be64(nonce_counter, nonce);
+
+	uint8_t iv_buffer_for_api[PSA_BLOCK_CIPHER_BLOCK_LENGTH(PSA_KEY_TYPE_AES)]; // Should be 16
+    memset(iv_buffer_for_api, 0, sizeof(iv_buffer_for_api));          			// Zero pad
+    memcpy(iv_buffer_for_api, nonce, NONCE_LEN);                       			// Copy the 8-byte nonce
+
 	psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
+    size_t olen = 0;           // For output length from PSA functions
+    size_t ciphertext_len = 0; // Accumulate total ciphertext written
 
-	psa_status_t st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
-	if (st != PSA_SUCCESS)
-	{
-		LOG_ERR("Failed to setup cipher encryption: %d", st);
-		return st;
-	}
+    st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
+    if (st != PSA_SUCCESS) {
+        LOG_ERR("Failed to setup cipher encryption: %d", st);
+        ret = -EFAULT; // Map PSA error
+        goto cleanup;  // No operation to abort yet
+    }
 
-	st = psa_cipher_generate_iv(&op, m_iv, sizeof(m_iv), &olen); 
-	if (st != PSA_SUCCESS)
-	{
-		LOG_ERR("psa_cipher_generate_iv failed! (Error: %d)", st);
-		return st;
-	}
-	
-	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
-		out+NONCE_LEN, SENSOR_DATA_PACKET_SIZE, &olen); 
-	if (st != PSA_SUCCESS)
-	{
-		LOG_ERR("Failed to update plain text: %d", st);
-		return st;
-	}
-	
-	st = psa_cipher_finish(&op, NULL, 0, &olen);
-	if (st != PSA_SUCCESS)
-	{
-		LOG_ERR("Failed to finish cipher op: %d", st);
-		return st;
-	}
-	
-	psa_cipher_abort(&op);
-	psa_destroy_key(kid);
+    // --- Use the 16-byte padded buffer for the API call ---
+    st = psa_cipher_set_iv(&op, iv_buffer_for_api, sizeof(iv_buffer_for_api));
+    if (st != PSA_SUCCESS) {
+        LOG_ERR("Failed to set cipher IV: %d", st);
+        ret = -EFAULT;
+        goto cleanup_op; // Abort the operation
+    }
+    // ------------------------------------------------------
 
-	if (st != PSA_SUCCESS || olen != SENSOR_DATA_PACKET_SIZE)
-	{
-		return -EFAULT;
-	}
-	
-	return 0; 
+    // Encrypt data, placing ciphertext *after* the nonce space in 'out'
+    st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
+                           out + NONCE_LEN,           /* Output buffer starts after nonce */
+                           SENSOR_DATA_PACKET_SIZE,   /* Max capacity for ciphertext */
+                           &olen);
+    if (st != PSA_SUCCESS) {
+        LOG_ERR("Failed to update cipher: %d", st);
+        ret = -EFAULT;
+        goto cleanup_op;
+    }
+    ciphertext_len += olen;
+
+    // Finish the operation (usually produces no more output for CTR)
+    st = psa_cipher_finish(&op,
+                           out + NONCE_LEN + ciphertext_len, /* Where to write if any */
+                           SENSOR_DATA_PACKET_SIZE - ciphertext_len, /* Remaining capacity */
+                           &olen);
+    if (st != PSA_SUCCESS) {
+        LOG_ERR("Failed to finish cipher op: %d", st);
+        ret = -EFAULT;
+        goto cleanup_op;
+    }
+    ciphertext_len += olen;
+
+    // --- CRITICAL FIX: Copy the actual 8-byte nonce to the output buffer ---
+    memcpy(out, nonce, NONCE_LEN);
+    // Now 'out' contains [ 8-byte nonce | 20-byte ciphertext ]
+    // --------------------------------------------------------------------
+
+    // --- Verification ---
+    if (ciphertext_len != SENSOR_DATA_PACKET_SIZE) {
+        LOG_ERR("Ciphertext length mismatch: expected %d, got %u",
+                SENSOR_DATA_PACKET_SIZE, (unsigned int)ciphertext_len);
+        ret = -EIO; // Unexpected data size error
+        // Nonce is copied, but ciphertext is incomplete/wrong. Return error.
+        goto cleanup_op; // Ensure abort is called
+    }
+
+// Cleanup labels
+cleanup_op:
+    // Abort the operation if it was successfully set up
+    psa_cipher_abort(&op); // Best effort cleanup
+cleanup:
+    // --- Removed key destruction ---
+    return ret; // 0 on success, negative error code on failure
 }
 
 /**
@@ -1294,6 +1313,29 @@ int main(void)
 		return -1;
 	}
 
+	// --- Import the AES Key ONCE ---
+	static const uint8_t aes_key[16] = {
+		0x9F, 0x7B, 0x25, 0xA0, 0x68, 0x52, 0x33, 0x1C,
+		0x10, 0x42, 0x5E, 0x71, 0x99, 0x84, 0xC7, 0xDD};
+	
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
+	psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE); // Or persistent if needed
+	psa_set_key_algorithm(&attr, PSA_ALG_CTR);
+	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+	psa_set_key_bits(&attr, 128);
+
+	// Store the key handle in the global variable
+	ret = psa_import_key(&attr, aes_key, sizeof(aes_key), &g_aes_key_id);
+	if (ret != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to import AES key: %d", ret);
+		// Handle error - perhaps cannot continue securely
+		return -1;
+	}
+	psa_reset_key_attributes(&attr); // Good practice
+	LOG_INF("Step 7: AES Key Imported Successfully (ID: %u)", (unsigned int)g_aes_key_id);
+
 	// USB Device Subsystem
 	ret = usb_enable(usb_dc_status_cb); // Register callback
 	if (ret)
@@ -1303,7 +1345,7 @@ int main(void)
 	}
 	else
 	{
-		LOG_INF("Step 7: USB callback registered");
+		LOG_INF("Step 8: USB callback registered");
 	}
 
 	// --- Initialise Timers ---
