@@ -200,6 +200,7 @@ static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 // Buffer for dynamic manufacturer data in advertisement
 static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
 static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN]; 
+static uint8_t m_iv[16]; 
 
 // --- Advertising Data (Primary Packet) ---
 struct bt_data ad[] = {
@@ -740,19 +741,11 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
+
+
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 {	
 	int ret;
-	static bool psa_ready;
-	if (!psa_ready)
-	{	
-		ret = psa_crypto_init();
-		if (ret != PSA_SUCCESS)
-		{
-			return ret;
-		}
-		psa_ready = true; 
-	}
 	
 	// Prepare a 128-bit key
 	static const uint8_t aes_key[16] = {
@@ -762,11 +755,13 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 
 	// Import key into the PSA keystore (volatile)
 	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+
+	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT); 
+	psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE);
+	psa_set_key_algorithm(&attr, PSA_ALG_CTR); 
 	psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
 	psa_set_key_bits(&attr, 128); 
-	psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE); 
-	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT); 
-
+	 
 	psa_key_id_t kid;
 	ret = psa_import_key(&attr, aes_key, sizeof(aes_key), &kid);
 	if (ret != PSA_SUCCESS)
@@ -775,41 +770,36 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 		return ret;
 	}
 
-	// Build 8-byte nonce
-	static uint32_t ctr = 0;
-	uint8_t nonce[NONCE_LEN]; 
-	uint32_t t = sys_cpu_to_le32(k_uptime_get_32());
-	memcpy(nonce, &t, 4);
-	memcpy(nonce + 4, &ctr, 4);
-	ctr ++;
+	psa_reset_key_attributes(&attr); 
+	LOG_INF("AES key imported successfully"); 
 
 	// Run AES-CTR
+	uint32_t olen; 
 	psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
-	psa_status_t st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
 
+	psa_status_t st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
 	if (st != PSA_SUCCESS)
 	{
 		LOG_ERR("Failed to setup cipher encryption: %d", st);
 		return st;
 	}
 
-	st = psa_cipher_set_iv(&op, nonce, NONCE_LEN);
+	st = psa_cipher_generate_iv(&op, m_iv, sizeof(m_iv), &olen); 
 	if (st != PSA_SUCCESS)
 	{
-		LOG_ERR("Failed to setup cipher Nonce: %d", st);
+		LOG_ERR("psa_cipher_generate_iv failed! (Error: %d)", st);
 		return st;
 	}
 	
-	size_t written = 0;
 	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
-		out+NONCE_LEN, SENSOR_DATA_PACKET_SIZE, &written); 
+		out+NONCE_LEN, SENSOR_DATA_PACKET_SIZE, &olen); 
 	if (st != PSA_SUCCESS)
 	{
 		LOG_ERR("Failed to update plain text: %d", st);
 		return st;
 	}
 	
-	st = psa_cipher_finish(&op, NULL, 0, &written);
+	st = psa_cipher_finish(&op, NULL, 0, &olen);
 	if (st != PSA_SUCCESS)
 	{
 		LOG_ERR("Failed to finish cipher op: %d", st);
@@ -819,12 +809,10 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	psa_cipher_abort(&op);
 	psa_destroy_key(kid);
 
-	if (st != PSA_SUCCESS || written != SENSOR_DATA_PACKET_SIZE)
+	if (st != PSA_SUCCESS || olen != SENSOR_DATA_PACKET_SIZE)
 	{
 		return -EFAULT;
 	}
-	
-	memcpy(out, nonce, NONCE_LEN); 
 	
 	return 0; 
 }
