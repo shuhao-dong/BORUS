@@ -62,10 +62,10 @@ static uint64_t nonce_counter = 0;
 #define SCANNER_THREAD_STACKSIZE 1024
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 5 // Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 6 // Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 7	  // Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 7 // Lower priority tasks for scan AP heartbeat
+#define BMI270_HANDLER_PRIORITY 5 		// Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 6 		// Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 	7	  	// Lower priority tasks for BLE and logging
+#define SCANNER_THREAD_PRIORITY 7 		// Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -92,6 +92,8 @@ typedef enum
 
 // Work item for heartbeat timeout -> Away state
 static struct k_work heartbeat_timeout_work;
+// Work item for battery timeout -> Periodic voltage reading
+static struct k_work battery_timeout_work;
 // Work item for USB connect -> CHARGING state
 static struct k_work usb_connect_work;
 // Work item for USB disconnect -> HOME state (or chosen default)
@@ -160,20 +162,20 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 1000 / 20
-#define BATTERY_READ_INTERVAL K_MINUTES(30)
-#define HEARTBEAT_TIMEOUT K_SECONDS(90) // If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 32
-#define BLE_ADV_INTERVAL_MAX 33
-#define SENSOR_DATA_PACKET_SIZE 20 			// Size calculated from prepare_packet
-#define NONCE_LEN	8
-#define ENC_ADV_PAYLOAD_LEN	(NONCE_LEN + SENSOR_DATA_PACKET_SIZE)
-#define SCAN_INTERVAL K_MINUTES(1)
-#define SCAN_WINDOW K_SECONDS(5)
-#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D" 	// TORUS_1
-#define PRESSURE_BASE_PA 90000			   	// Base offset in Pascals
-#define TEMPERATURE_LOW_LIMIT	30		   	// -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT	40		   	// +40 degree as the highest temperature of interest
+#define BMP390_READ_INTERVAL 		1000 / 20
+#define BATTERY_READ_INTERVAL 		K_MINUTES(15)	// Every 15 minute
+#define HEARTBEAT_TIMEOUT 			K_SECONDS(90) 	// If no heartbeat for 90s, assume away
+#define BLE_ADV_INTERVAL_MIN 		32
+#define BLE_ADV_INTERVAL_MAX 		33
+#define SENSOR_DATA_PACKET_SIZE 	20 				// Size calculated from prepare_packet
+#define NONCE_LEN					8
+#define ENC_ADV_PAYLOAD_LEN			(NONCE_LEN + SENSOR_DATA_PACKET_SIZE)
+#define SCAN_INTERVAL 				K_MINUTES(1)
+#define SCAN_WINDOW 				K_SECONDS(5)
+#define TARGET_AP_ADDR 				"2C:CF:67:89:E0:5D" 	// TORUS_1
+#define PRESSURE_BASE_PA 			90000			   	// Base offset in Pascals
+#define TEMPERATURE_LOW_LIMIT		30		   	// -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT		40		   	// +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
@@ -416,6 +418,30 @@ static void enter_state(device_state_t new_state)
 	}
 }
 
+static void battery_timeout_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	int batt_mV = battery_sample();
+	if (batt_mV >= 0)
+	{ // Check for valid reading
+		unsigned int bat_pptt = battery_level_pptt(batt_mV, levels);
+		sensor_message_t msg = {.type = SENSOR_MSG_TYPE_BATTERY};
+		msg.payload.batt.battery = (uint8_t)(bat_pptt / 100);
+		msg.payload.batt.timestamp = k_uptime_get_32();
+
+		if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
+		{
+			LOG_WRN("Battery queue full");
+		}
+		LOG_DBG("Battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
+	}
+	else
+	{
+		LOG_ERR("Failed to read battery voltage: %d", batt_mV);
+	}
+}
+
 /**
  * @brief Callback function for heartbeat timeout workqueue. This
  * checks if we received heartbeat from APs to confirm we are still at home
@@ -497,25 +523,10 @@ void bmi270_int1_interrupt_triggered(const struct device *dev, struct gpio_callb
  * @brief Callback function when battery timer expires. Offloaded to a workqueue.
  */
 void battery_timer_expiry(struct k_timer *timer_id)
-{
-	int batt_mV = battery_sample();
-	if (batt_mV >= 0)
-	{ // Check for valid reading
-		unsigned int bat_pptt = battery_level_pptt(batt_mV, levels);
-		sensor_message_t msg = {.type = SENSOR_MSG_TYPE_BATTERY};
-		msg.payload.batt.battery = (uint8_t)(bat_pptt / 100);
-		msg.payload.batt.timestamp = k_uptime_get_32();
-
-		if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
-		{
-			LOG_WRN("Battery queue full");
-		}
-		LOG_DBG("Battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
-	}
-	else
-	{
-		LOG_ERR("Failed to read battery voltage: %d", batt_mV);
-	}
+{	
+	// This timer fires only if it wasn't stopped by receiving a heartbeat
+	LOG_DBG("Heartbeat timer expired, submitting work");
+	k_work_submit(&battery_timeout_work);
 }
 
 /**
@@ -893,7 +904,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	bool state_needs_update = false;					// Flag to reduce ADV updates
 
 	uint32_t save_timer = k_uptime_get_32();
-	const uint32_t SAVE_INTERVAL_MS = 5 * 1000;
+	const uint32_t SAVE_INTERVAL_MS = 5 * 60 * 1000;	// Log the counter every 5 min
 
 	struct fs_file_t log_file;			  // File object for littlefs
 	bool file_is_open = false;			  // Track if log file is currently open
@@ -1431,11 +1442,10 @@ int main(void)
 	// --- Initialise Timers ---
 	k_timer_init(&heartbeat_timeout_timer, heartbeat_timeout_expiry, NULL);
 	k_timer_init(&battery_timer, battery_timer_expiry, NULL);
-
-	// Start the periodic battery timer
 	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
 
 	// Initialise workqueue items
+	k_work_init(&battery_timeout_work, battery_timeout_work_handler); 
 	k_work_init(&heartbeat_timeout_work, heartbeat_timeout_work_handler);
 	k_work_init(&usb_connect_work, usb_connect_work_handler);
 	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
