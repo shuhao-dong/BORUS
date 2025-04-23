@@ -43,12 +43,15 @@
 #include <errno.h>
 #include <psa/crypto.h>
 #include <psa/crypto_values.h>
+#include <zephyr/settings/settings.h>
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
 /* -------------------- Key ID for encryption -------------------- */
 
 static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; 
+static uint64_t nonce_counter = 0;
+#define BORUS_SETTINGS_PATH		"borus/state"
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -745,6 +748,44 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
+// This function gets called by settings_load() if the key is found
+static int settings_handle_nonce_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	LOG_INF("Settings handler entered for key: %s (len: %d)", name ? name : "NULL", len); 
+
+	const char *next;
+	int ret;
+
+	if (settings_name_steq(name, "nonce_ctr", &next) && !next)
+	{
+		if (len != sizeof(nonce_counter))
+		{
+			LOG_ERR("Invalid size for nonce_ctr setting (%d != %d)", len, sizeof(nonce_counter));
+			return -EINVAL;
+		}
+
+		ret = read_cb(cb_arg, &nonce_counter, sizeof(nonce_counter)); 
+		if (ret > 0)
+		{
+			LOG_INF("Loaded nonce_counter from NVS: %llu", nonce_counter); 
+			return 0;
+		}
+		LOG_ERR("Failed to read nonce_ctr setting: %d", ret);
+		return ret;
+	}
+	return -ENOENT; 
+}
+
+// Register the settings handler for the specific subtree
+SETTINGS_STATIC_HANDLER_DEFINE(
+	borus_state,
+	BORUS_SETTINGS_PATH,
+	NULL,
+	settings_handle_nonce_set,
+	NULL,
+	NULL
+);
+
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 {	
 	if (g_aes_key_id == PSA_KEY_ID_NULL)
@@ -757,7 +798,6 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	psa_status_t st;
 	int ret = 0;
 	
-	static uint64_t nonce_counter = 0;
 	uint8_t nonce[NONCE_LEN]; 
 
 	nonce_counter ++;
@@ -846,10 +886,14 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 	LOG_INF("BLE Logger thread started");
 
+	int ret;
 	sensor_message_t received_msg;						// Received from message queue
 	ble_packet_t current_sensor_state = {0};			// Initialise
 	current_sensor_state.timestamp = k_uptime_get_32(); // Set initial timestamp
 	bool state_needs_update = false;					// Flag to reduce ADV updates
+
+	uint32_t save_timer = k_uptime_get_32();
+	const uint32_t SAVE_INTERVAL_MS = 5 * 1000;
 
 	struct fs_file_t log_file;			  // File object for littlefs
 	bool file_is_open = false;			  // Track if log file is currently open
@@ -861,7 +905,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	while (1)
 	{
 		/* Get each message from the message queue */
-		int ret = k_msgq_get(&sensor_message_queue, &received_msg, K_FOREVER);
+		ret = k_msgq_get(&sensor_message_queue, &received_msg, K_FOREVER);
 		if (ret == 0)
 		{
 			state_needs_update = true; // Received new data
@@ -947,6 +991,18 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 					LOG_WRN("Failed to update ADV data: %d", ret);
 				}
 
+				if (k_uptime_get_32() - save_timer > SAVE_INTERVAL_MS)
+				{
+					ret = settings_save_one(BORUS_SETTINGS_PATH "/nonce_ctr", (const void *)&nonce_counter, sizeof(nonce_counter));
+					if (ret == 0)
+					{
+						LOG_INF("Saved nonce_counter to NVS: %llu", nonce_counter);
+					} else {
+						LOG_ERR("Failed to save nonce_counter to NVS: %d", ret);
+					}
+					save_timer = k_uptime_get_32(); 
+				}
+				
 				state_needs_update = false;
 			}
 			else if (active_state == STATE_AWAY_LOGGING)
@@ -1334,6 +1390,32 @@ int main(void)
 	psa_reset_key_attributes(&attr); // Good practice
 	LOG_INF("Step 7: AES Key Imported Successfully (ID: %u)", (unsigned int)g_aes_key_id);
 
+	ret = settings_subsys_init();
+	if (ret != 0)
+	{
+		LOG_ERR("Failed to initialise settings subsystem: %d", ret);
+		return -1;
+	} else {
+		LOG_INF("Setting subsystem initialised");
+	}
+	
+	ret = settings_load_subtree("borus/state");
+	if (ret == 0)
+	{
+		LOG_INF("Settings loaded successfully");
+	}
+	else if (ret == -ENOENT)
+	{
+		LOG_INF("No 'bours/state' settings found in NVS. Using default = 0");
+	}
+	else
+	{
+		LOG_ERR("Failed to load settings for 'borus/state': %d", ret);
+	}
+	LOG_INF("Starting with nonce_counter = %llu", nonce_counter);
+
+	LOG_INF("Step 8: Settings loaded"); 
+
 	// USB Device Subsystem
 	ret = usb_enable(usb_dc_status_cb); // Register callback
 	if (ret)
@@ -1343,7 +1425,7 @@ int main(void)
 	}
 	else
 	{
-		LOG_INF("Step 8: USB callback registered");
+		LOG_INF("Step 9: USB callback registered");
 	}
 
 	// --- Initialise Timers ---
