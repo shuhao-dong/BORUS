@@ -49,9 +49,9 @@ LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
 /* -------------------- Key ID for encryption -------------------- */
 
-static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; 
+static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL;
 static uint64_t nonce_counter = 0;
-#define BORUS_SETTINGS_PATH		"borus/state"
+#define BORUS_SETTINGS_PATH "borus/state"
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -62,10 +62,10 @@ static uint64_t nonce_counter = 0;
 #define SCANNER_THREAD_STACKSIZE 1024
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 5 		// Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 6 		// Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 	7	  	// Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 7 		// Lower priority tasks for scan AP heartbeat
+#define BMI270_HANDLER_PRIORITY 5 // Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 6 // Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 7	  // Lower priority tasks for BLE and logging
+#define SCANNER_THREAD_PRIORITY 7 // Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -162,20 +162,20 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 		1000 / 20
-#define BATTERY_READ_INTERVAL 		K_MINUTES(15)	// Every 15 minute
-#define HEARTBEAT_TIMEOUT 			K_SECONDS(90) 	// If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 		32
-#define BLE_ADV_INTERVAL_MAX 		33
-#define SENSOR_DATA_PACKET_SIZE 	20 				// Size calculated from prepare_packet
-#define NONCE_LEN					8
-#define ENC_ADV_PAYLOAD_LEN			(NONCE_LEN + SENSOR_DATA_PACKET_SIZE)
-#define SCAN_INTERVAL 				K_MINUTES(1)
-#define SCAN_WINDOW 				K_SECONDS(5)
-#define TARGET_AP_ADDR 				"2C:CF:67:89:E0:5D" 	// TORUS_1
-#define PRESSURE_BASE_PA 			90000			   	// Base offset in Pascals
-#define TEMPERATURE_LOW_LIMIT		30		   	// -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT		40		   	// +40 degree as the highest temperature of interest
+#define BMP390_READ_INTERVAL 1000 / 20
+#define BATTERY_READ_INTERVAL K_MINUTES(15) // Every 15 minute
+#define HEARTBEAT_TIMEOUT K_SECONDS(90)		// If no heartbeat for 90s, assume away
+#define BLE_ADV_INTERVAL_MIN 32
+#define BLE_ADV_INTERVAL_MAX 33
+#define SENSOR_DATA_PACKET_SIZE 20 // Size calculated from prepare_packet
+#define NONCE_LEN 8
+#define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE)
+#define SCAN_INTERVAL K_MINUTES(1)
+#define SCAN_WINDOW K_SECONDS(5)
+#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D" // TORUS_1
+#define PRESSURE_BASE_PA 90000			   // Base offset in Pascals
+#define TEMPERATURE_LOW_LIMIT 30		   // -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT 40		   // +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
@@ -209,7 +209,7 @@ static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 
 // Buffer for dynamic manufacturer data in advertisement
 static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
-static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN]; 
+static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN];
 
 // --- Advertising Data (Primary Packet) ---
 struct bt_data ad[] = {
@@ -523,7 +523,7 @@ void bmi270_int1_interrupt_triggered(const struct device *dev, struct gpio_callb
  * @brief Callback function when battery timer expires. Offloaded to a workqueue.
  */
 void battery_timer_expiry(struct k_timer *timer_id)
-{	
+{
 	// This timer fires only if it wasn't stopped by receiving a heartbeat
 	LOG_DBG("Heartbeat timer expired, submitting work");
 	k_work_submit(&battery_timeout_work);
@@ -616,9 +616,9 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 
 	// Temperature: Assume we only need -30 to 40 degree with 1 degree C precision
 	int temp_C = round((float)data->temperature / 100.0f);
-	temp_C = CLAMP(temp_C, -TEMPERATURE_LOW_LIMIT, TEMPERATURE_HIGH_LIMIT); 
-	uint8_t encoded_temp = (uint8_t)(temp_C + TEMPERATURE_LOW_LIMIT); 
-	buffer[offset++] = encoded_temp;	// 1 byte
+	temp_C = CLAMP(temp_C, -TEMPERATURE_LOW_LIMIT, TEMPERATURE_HIGH_LIMIT);
+	uint8_t encoded_temp = (uint8_t)(temp_C + TEMPERATURE_LOW_LIMIT);
+	buffer[offset++] = encoded_temp; // 1 byte
 
 	// Pressure (Convert to uint16_t offset Pascals)
 	uint32_t pressure_pa_x10 = data->pressure;
@@ -631,7 +631,7 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 		pressure_offset = (temp_offset > UINT16_MAX) ? UINT16_MAX : (uint16_t)temp_offset;
 	} // else offset remains 0 (for pressure below base)
 	sys_put_le16(pressure_offset, &buffer[offset]);
-	offset += 2;	// 2 bytes
+	offset += 2; // 2 bytes
 
 	/* IMU data */
 	for (int i = 0; i < 6; i++)
@@ -642,10 +642,10 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 
 	/* Timestamp */
 	sys_put_le32(data->timestamp, &buffer[offset]);
-	offset += 4;	// 4 bytes
+	offset += 4; // 4 bytes
 
 	/* Battery percentage */
-	buffer[offset++] = data->battery;	// 1 byte
+	buffer[offset++] = data->battery; // 1 byte
 
 	// Check total size
 	if (offset != SENSOR_DATA_PACKET_SIZE)
@@ -762,7 +762,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 // This function gets called by settings_load() if the key is found
 static int settings_handle_nonce_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
-	LOG_INF("Settings handler entered for key: %s (len: %d)", name ? name : "NULL", len); 
+	LOG_INF("Settings handler entered for key: %s (len: %d)", name ? name : "NULL", len);
 
 	const char *next;
 	int ret;
@@ -775,16 +775,16 @@ static int settings_handle_nonce_set(const char *name, size_t len, settings_read
 			return -EINVAL;
 		}
 
-		ret = read_cb(cb_arg, &nonce_counter, sizeof(nonce_counter)); 
+		ret = read_cb(cb_arg, &nonce_counter, sizeof(nonce_counter));
 		if (ret > 0)
 		{
-			LOG_INF("Loaded nonce_counter from NVS: %llu", nonce_counter); 
+			LOG_INF("Loaded nonce_counter from NVS: %llu", nonce_counter);
 			return 0;
 		}
 		LOG_ERR("Failed to read nonce_ctr setting: %d", ret);
 		return ret;
 	}
-	return -ENOENT; 
+	return -ENOENT;
 }
 
 // Register the settings handler for the specific subtree
@@ -794,95 +794,99 @@ SETTINGS_STATIC_HANDLER_DEFINE(
 	NULL,
 	settings_handle_nonce_set,
 	NULL,
-	NULL
-);
+	NULL);
 
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
-{	
+{
 	if (g_aes_key_id == PSA_KEY_ID_NULL)
 	{
 		LOG_ERR("AES key handle is not valid");
-		return -EPERM; 
+		return -EPERM;
 	}
-	psa_key_id_t kid = g_aes_key_id; 
+	psa_key_id_t kid = g_aes_key_id;
 
 	psa_status_t st;
 	int ret = 0;
-	
-	uint8_t nonce[NONCE_LEN]; 
 
-	nonce_counter ++;
+	uint8_t nonce[NONCE_LEN];
+
+	nonce_counter++;
 	sys_put_be64(nonce_counter, nonce);
 
 	uint8_t iv_buffer_for_api[PSA_BLOCK_CIPHER_BLOCK_LENGTH(PSA_KEY_TYPE_AES)]; // Should be 16
-    memset(iv_buffer_for_api, 0, sizeof(iv_buffer_for_api));          			// Zero pad
-    memcpy(iv_buffer_for_api, nonce, NONCE_LEN);                       			// Copy the 8-byte nonce
+	memset(iv_buffer_for_api, 0, sizeof(iv_buffer_for_api));					// Zero pad
+	memcpy(iv_buffer_for_api, nonce, NONCE_LEN);								// Copy the 8-byte nonce
 
 	psa_cipher_operation_t op = PSA_CIPHER_OPERATION_INIT;
-    size_t olen = 0;           // For output length from PSA functions
-    size_t ciphertext_len = 0; // Accumulate total ciphertext written
+	size_t olen = 0;		   // For output length from PSA functions
+	size_t ciphertext_len = 0; // Accumulate total ciphertext written
 
-    st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
-    if (st != PSA_SUCCESS) {
-        LOG_ERR("Failed to setup cipher encryption: %d", st);
-        ret = -EFAULT; // Map PSA error
-        goto cleanup;  // No operation to abort yet
-    }
+	st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to setup cipher encryption: %d", st);
+		ret = -EFAULT; // Map PSA error
+		goto cleanup;  // No operation to abort yet
+	}
 
-    // --- Use the 16-byte padded buffer for the API call ---
-    st = psa_cipher_set_iv(&op, iv_buffer_for_api, sizeof(iv_buffer_for_api));
-    if (st != PSA_SUCCESS) {
-        LOG_ERR("Failed to set cipher IV: %d", st);
-        ret = -EFAULT;
-        goto cleanup_op; // Abort the operation
-    }
-    // ------------------------------------------------------
+	// --- Use the 16-byte padded buffer for the API call ---
+	st = psa_cipher_set_iv(&op, iv_buffer_for_api, sizeof(iv_buffer_for_api));
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to set cipher IV: %d", st);
+		ret = -EFAULT;
+		goto cleanup_op; // Abort the operation
+	}
+	// ------------------------------------------------------
 
-    // Encrypt data, placing ciphertext *after* the nonce space in 'out'
-    st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
-                           out + NONCE_LEN,           /* Output buffer starts after nonce */
-                           SENSOR_DATA_PACKET_SIZE,   /* Max capacity for ciphertext */
-                           &olen);
-    if (st != PSA_SUCCESS) {
-        LOG_ERR("Failed to update cipher: %d", st);
-        ret = -EFAULT;
-        goto cleanup_op;
-    }
-    ciphertext_len += olen;
+	// Encrypt data, placing ciphertext *after* the nonce space in 'out'
+	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
+						   out + NONCE_LEN,			/* Output buffer starts after nonce */
+						   SENSOR_DATA_PACKET_SIZE, /* Max capacity for ciphertext */
+						   &olen);
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to update cipher: %d", st);
+		ret = -EFAULT;
+		goto cleanup_op;
+	}
+	ciphertext_len += olen;
 
-    // Finish the operation (usually produces no more output for CTR)
-    st = psa_cipher_finish(&op,
-                           out + NONCE_LEN + ciphertext_len, /* Where to write if any */
-                           SENSOR_DATA_PACKET_SIZE - ciphertext_len, /* Remaining capacity */
-                           &olen);
-    if (st != PSA_SUCCESS) {
-        LOG_ERR("Failed to finish cipher op: %d", st);
-        ret = -EFAULT;
-        goto cleanup_op;
-    }
-    ciphertext_len += olen;
+	// Finish the operation (usually produces no more output for CTR)
+	st = psa_cipher_finish(&op,
+						   out + NONCE_LEN + ciphertext_len,		 /* Where to write if any */
+						   SENSOR_DATA_PACKET_SIZE - ciphertext_len, /* Remaining capacity */
+						   &olen);
+	if (st != PSA_SUCCESS)
+	{
+		LOG_ERR("Failed to finish cipher op: %d", st);
+		ret = -EFAULT;
+		goto cleanup_op;
+	}
+	ciphertext_len += olen;
 
-    // --- CRITICAL FIX: Copy the actual 8-byte nonce to the output buffer ---
-    memcpy(out, nonce, NONCE_LEN);
-    // Now 'out' contains [ 8-byte nonce | 20-byte ciphertext ]
-    // --------------------------------------------------------------------
+	// --- CRITICAL FIX: Copy the actual 8-byte nonce to the output buffer ---
+	memcpy(out, nonce, NONCE_LEN);
+	// Now 'out' contains [ 8-byte nonce | 20-byte ciphertext ]
+	// --------------------------------------------------------------------
 
-    // --- Verification ---
-    if (ciphertext_len != SENSOR_DATA_PACKET_SIZE) {
-        LOG_ERR("Ciphertext length mismatch: expected %d, got %u",
-                SENSOR_DATA_PACKET_SIZE, (unsigned int)ciphertext_len);
-        ret = -EIO; // Unexpected data size error
-        // Nonce is copied, but ciphertext is incomplete/wrong. Return error.
-        goto cleanup_op; // Ensure abort is called
-    }
+	// --- Verification ---
+	if (ciphertext_len != SENSOR_DATA_PACKET_SIZE)
+	{
+		LOG_ERR("Ciphertext length mismatch: expected %d, got %u",
+				SENSOR_DATA_PACKET_SIZE, (unsigned int)ciphertext_len);
+		ret = -EIO; // Unexpected data size error
+		// Nonce is copied, but ciphertext is incomplete/wrong. Return error.
+		goto cleanup_op; // Ensure abort is called
+	}
 
 // Cleanup labels
 cleanup_op:
-    // Abort the operation if it was successfully set up
-    psa_cipher_abort(&op); // Best effort cleanup
+	// Abort the operation if it was successfully set up
+	psa_cipher_abort(&op); // Best effort cleanup
 cleanup:
-    // --- Removed key destruction ---
-    return ret; // 0 on success, negative error code on failure
+	// --- Removed key destruction ---
+	return ret; // 0 on success, negative error code on failure
 }
 
 /**
@@ -904,7 +908,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	bool state_needs_update = false;					// Flag to reduce ADV updates
 
 	uint32_t save_timer = k_uptime_get_32();
-	const uint32_t SAVE_INTERVAL_MS = 5 * 60 * 1000;	// Log the counter every 5 min
+	const uint32_t SAVE_INTERVAL_MS = 5 * 60 * 1000; // Log the counter every 5 min
 
 	struct fs_file_t log_file;			  // File object for littlefs
 	bool file_is_open = false;			  // Track if log file is currently open
@@ -1008,12 +1012,14 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 					if (ret == 0)
 					{
 						LOG_INF("Saved nonce_counter to NVS: %llu", nonce_counter);
-					} else {
+					}
+					else
+					{
 						LOG_ERR("Failed to save nonce_counter to NVS: %d", ret);
 					}
-					save_timer = k_uptime_get_32(); 
+					save_timer = k_uptime_get_32();
 				}
-				
+
 				state_needs_update = false;
 			}
 			else if (active_state == STATE_AWAY_LOGGING)
@@ -1382,7 +1388,7 @@ int main(void)
 	static const uint8_t aes_key[16] = {
 		0x9F, 0x7B, 0x25, 0xA0, 0x68, 0x52, 0x33, 0x1C,
 		0x10, 0x42, 0x5E, 0x71, 0x99, 0x84, 0xC7, 0xDD};
-	
+
 	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
 	psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
 	psa_set_key_lifetime(&attr, PSA_KEY_LIFETIME_VOLATILE); // Or persistent if needed
@@ -1406,10 +1412,12 @@ int main(void)
 	{
 		LOG_ERR("Failed to initialise settings subsystem: %d", ret);
 		return -1;
-	} else {
+	}
+	else
+	{
 		LOG_INF("Setting subsystem initialised");
 	}
-	
+
 	ret = settings_load_subtree("borus/state");
 	if (ret == 0)
 	{
@@ -1425,7 +1433,7 @@ int main(void)
 	}
 	LOG_INF("Starting with nonce_counter = %llu", nonce_counter);
 
-	LOG_INF("Step 8: Settings loaded"); 
+	LOG_INF("Step 8: Settings loaded");
 
 	// USB Device Subsystem
 	ret = usb_enable(usb_dc_status_cb); // Register callback
@@ -1445,7 +1453,7 @@ int main(void)
 	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
 
 	// Initialise workqueue items
-	k_work_init(&battery_timeout_work, battery_timeout_work_handler); 
+	k_work_init(&battery_timeout_work, battery_timeout_work_handler);
 	k_work_init(&heartbeat_timeout_work, heartbeat_timeout_work_handler);
 	k_work_init(&usb_connect_work, usb_connect_work_handler);
 	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
