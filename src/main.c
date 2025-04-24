@@ -45,7 +45,7 @@
 #include <psa/crypto_values.h>
 #include <zephyr/settings/settings.h>
 
-LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
 
 /* -------------------- Encryption -------------------- */
 
@@ -162,7 +162,7 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 			1000 / 20								// Read environment at 20 Hz
+#define BMP390_READ_INTERVAL 			1000									// Read environment at 1 Hz
 #define BATTERY_READ_INTERVAL 			K_MINUTES(15) 							// Every 15 minute read one battery voltage
 #define HEARTBEAT_TIMEOUT 				K_SECONDS(90)							// If no heartbeat for 90s, assume away
 #define BLE_ADV_INTERVAL_MIN 			32										// BLE advertise interval 32*0.625 ms
@@ -173,7 +173,7 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 #define SCAN_INTERVAL 					K_MINUTES(1)							// BLE scan interval, start scan every 1 minute
 #define SCAN_WINDOW 					K_SECONDS(5)							// BLE scan window, when started, scan for 5 seconds
 #define TARGET_AP_ADDR 					"2C:CF:67:89:E0:5D" 					// Address for TORUS_1
-#define PRESSURE_BASE_PA 				90000			   						// Base offset in Pascals
+#define PRESSURE_BASE_HPA_X10 			9000			   						// Base offset in hPa x 10
 #define TEMPERATURE_LOW_LIMIT 			30		   								// -30 degree as the lowest temperature of interest
 #define TEMPERATURE_HIGH_LIMIT 			40		   								// +40 degree as the highest temperature of interest
 
@@ -660,15 +660,13 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 	buffer[offset++] = encoded_temp; // 1 byte
 
 	// Pressure (Convert to uint16_t offset Pascals)
-	uint32_t pressure_pa_x10 = data->pressure;
-	uint32_t pressure_pa = pressure_pa_x10 / 10;
+	uint16_t pressure_x10hpa = (uint16_t)data->pressure;
 	uint16_t pressure_offset = 0;
-	if (pressure_pa >= PRESSURE_BASE_PA)
+	
+	if (pressure_x10hpa >= PRESSURE_BASE_HPA_X10)
 	{
-		uint32_t temp_offset = pressure_pa - PRESSURE_BASE_PA;
-		// Clamp to uint16_t max if pressure exceeds expected range + base
-		pressure_offset = (temp_offset > UINT16_MAX) ? UINT16_MAX : (uint16_t)temp_offset;
-	} // else offset remains 0 (for pressure below base)
+		pressure_offset = pressure_x10hpa - PRESSURE_BASE_HPA_X10;
+	}
 	sys_put_le16(pressure_offset, &buffer[offset]);
 	offset += 2; // 2 bytes
 
@@ -778,7 +776,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 		{
 			sensor_message_t msg = {.type = SENSOR_MSG_TYPE_ENVIRONMENT};
 			msg.payload.env.temperature = (uint16_t)(sensor_value_to_double(&temp) * 100);
-			msg.payload.env.pressure = (uint32_t)(sensor_value_to_double(&press) * 100 * 10);
+			msg.payload.env.pressure = (uint32_t)(sensor_value_to_double(&press) * 100);	// kPa x 100 = hPa x 10 gives 0.1 hPa resolution
 			msg.payload.env.timestamp = k_uptime_get_32();
 
 			if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
@@ -786,8 +784,10 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 				LOG_WRN("BMP390 queue full");
 			}
 
-			LOG_DBG("Timestamp: %u, Temperature: %.2f",
-					msg.payload.env.timestamp, (double)(msg.payload.env.temperature / 100));
+			LOG_DBG("Timestamp: %u, Temperature: %.2f, Pressure: %.1f",
+					msg.payload.env.timestamp, 
+					(double)(msg.payload.env.temperature / 100),
+					(double)(msg.payload.env.pressure / 10.0));
 		}
 		else
 		{
