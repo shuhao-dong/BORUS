@@ -45,7 +45,7 @@
 #include <psa/crypto_values.h>
 #include <zephyr/settings/settings.h>
 
-LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
 /* -------------------- Encryption -------------------- */
 
