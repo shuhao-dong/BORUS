@@ -44,8 +44,18 @@
 #include <psa/crypto.h>
 #include <psa/crypto_values.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/drivers/watchdog.h>
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
+
+/* -------------------- Watchdog Timer --------------------*/
+
+#define WDT_TIMEOUT_MS	4000
+#define WDT_FEED_INTERVAL_MS	1000
+
+static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); ;
+static int wdt_channel_id = -1; 
+static struct k_timer wdt_feed_timer; 
 
 /* -------------------- Encryption -------------------- */
 
@@ -577,6 +587,12 @@ void heartbeat_timeout_expiry(struct k_timer *timer_id)
 	// This timer fires only if it wasn't stopped by receiving a heartbeat
 	LOG_DBG("Heartbeat timer expired, submitting work");
 	k_work_submit(&heartbeat_timeout_work);
+}
+
+static void watchdog_feed(struct k_timer *timer_id)
+{
+	const struct device *dev = (const struct device *)k_timer_user_data_get(timer_id);
+	wdt_feed(dev, wdt_channel_id); 
 }
 
 /**
@@ -1505,8 +1521,8 @@ int main(void)
 	}
 
 	// --- Initialise Timers ---
-	k_timer_init(&heartbeat_timeout_timer, heartbeat_timeout_expiry, NULL);
-	k_timer_init(&battery_timer, battery_timer_expiry, NULL);
+	k_timer_init(&heartbeat_timeout_timer, (k_timer_expiry_t)heartbeat_timeout_expiry, NULL);
+	k_timer_init(&battery_timer, (k_timer_expiry_t)battery_timer_expiry, NULL);
 	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
 
 	// Initialise workqueue items
@@ -1516,8 +1532,44 @@ int main(void)
 	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
 	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
 
-	LOG_INF("Step 8: Timers and WQ initialized and Battery timer started");
+	LOG_INF("Step 10: Timers and WQ initialized and Battery timer started");
 
+	/* Watchdog initialisation */
+	if (!device_is_ready(wdt_dev))
+	{
+		LOG_ERR("WDT device not ready");
+		return -1; 
+	}
+
+	struct wdt_timeout_cfg wdt_cfg = {
+		.window = {
+			.min = 0,
+			.max = WDT_TIMEOUT_MS,
+		},
+		.callback = NULL,	// Reset immediately, no callback
+		.flags = WDT_FLAG_RESET_SOC,
+	};
+
+	wdt_channel_id = wdt_install_timeout(wdt_dev, &wdt_cfg);
+	if (wdt_channel_id < 0)
+	{
+		LOG_ERR("Failed to install WDT timeout configuration: %d", wdt_channel_id);
+		return -1; 
+	}
+	
+	ret = wdt_setup(wdt_dev, 0); 
+	if (ret)
+	{
+		LOG_ERR("Failed to start WDT: %d", ret);
+		return -1;
+	}
+
+	LOG_INF("Step 11: Watchdog started (timeout %d ms)", WDT_TIMEOUT_MS); 
+
+	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
+	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
+	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS)); 
+	
 	/* LED to indicate successful initialisation sequence */
 	for (int i = 0; i < 3; i++)
 	{
