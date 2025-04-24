@@ -47,25 +47,25 @@
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
-/* -------------------- Key ID for encryption -------------------- */
+/* -------------------- Encryption -------------------- */
 
 static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL;
-static uint64_t nonce_counter = 0;
-#define BORUS_SETTINGS_PATH "borus/state"
+static uint64_t nonce_counter = 0;			// unique nonce for each BLE message
+#define BORUS_SETTINGS_PATH "borus/state"	// save nonce in NVM, allow reboot 
 
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 1024
-#define BMP390_HANDLER_STACKSIZE 1024
-#define BLE_LOGGER_THREAD_STACKSIZE 4096
-#define SCANNER_THREAD_STACKSIZE 1024
+#define BMI270_HANDLER_STACKSIZE 		1024
+#define BMP390_HANDLER_STACKSIZE 		1024
+#define BLE_LOGGER_THREAD_STACKSIZE 	4096
+#define SCANNER_THREAD_STACKSIZE 		1024
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 5 // Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 6 // Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 7	  // Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 7 // Lower priority tasks for scan AP heartbeat
+#define BMI270_HANDLER_PRIORITY 	5 	// Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 	6 	// Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 		7	// Lower priority tasks for BLE and logging
+#define SCANNER_THREAD_PRIORITY 	7 	// Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -162,25 +162,25 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 1000 / 20
-#define BATTERY_READ_INTERVAL K_MINUTES(15) // Every 15 minute
-#define HEARTBEAT_TIMEOUT K_SECONDS(90)		// If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 32
-#define BLE_ADV_INTERVAL_MAX 33
-#define SENSOR_DATA_PACKET_SIZE 20 // Size calculated from prepare_packet
-#define NONCE_LEN 8
-#define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE)
-#define SCAN_INTERVAL K_MINUTES(1)
-#define SCAN_WINDOW K_SECONDS(5)
-#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D" // TORUS_1
-#define PRESSURE_BASE_PA 90000			   // Base offset in Pascals
-#define TEMPERATURE_LOW_LIMIT 30		   // -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT 40		   // +40 degree as the highest temperature of interest
+#define BMP390_READ_INTERVAL 			1000 / 20								// Read environment at 20 Hz
+#define BATTERY_READ_INTERVAL 			K_MINUTES(15) 							// Every 15 minute read one battery voltage
+#define HEARTBEAT_TIMEOUT 				K_SECONDS(90)							// If no heartbeat for 90s, assume away
+#define BLE_ADV_INTERVAL_MIN 			32										// BLE advertise interval 32*0.625 ms
+#define BLE_ADV_INTERVAL_MAX 			33										// BLE advertise interval 
+#define SENSOR_DATA_PACKET_SIZE 		20 										// Size of the sensor data
+#define NONCE_LEN 						8										// Size of the encryption nonce
+#define ENC_ADV_PAYLOAD_LEN 			(NONCE_LEN + SENSOR_DATA_PACKET_SIZE)	// Size of the packet data
+#define SCAN_INTERVAL 					K_MINUTES(1)							// BLE scan interval, start scan every 1 minute
+#define SCAN_WINDOW 					K_SECONDS(5)							// BLE scan window, when started, scan for 5 seconds
+#define TARGET_AP_ADDR 					"2C:CF:67:89:E0:5D" 					// Address for TORUS_1
+#define PRESSURE_BASE_PA 				90000			   						// Base offset in Pascals
+#define TEMPERATURE_LOW_LIMIT 			30		   								// -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT 			40		   								// +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
-#define LOG_FILE_PATH "/lfs1/imu_log.bin"
-#define LFS_MOUNT_POINT "/lfs1"
+#define LOG_FILE_PATH 		"/lfs1/imu_log.bin"
+#define LFS_MOUNT_POINT 	"/lfs1"
 
 USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00");
 
@@ -418,6 +418,10 @@ static void enter_state(device_state_t new_state)
 	}
 }
 
+/**
+ * @brief Callback function for battery timeout workqueue. This reads battery
+ * voltage and push to the message queue 
+ */
 static void battery_timeout_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -796,6 +800,16 @@ SETTINGS_STATIC_HANDLER_DEFINE(
 	NULL,
 	NULL);
 
+/**
+ * @brief Encrypte sensor data using AES-CTR mode.
+ * 
+ * The encrypted BLE data packet is:
+ * 
+ * Nonce (8 bytes)
+ *  - Company ID (2 bytes) | Nonce (6 bytes)
+ * Sensor Data (20 bytes)
+ * 
+ */
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 {
 	if (g_aes_key_id == PSA_KEY_ID_NULL)
@@ -803,15 +817,20 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 		LOG_ERR("AES key handle is not valid");
 		return -EPERM;
 	}
-	psa_key_id_t kid = g_aes_key_id;
-
+	
 	psa_status_t st;
 	int ret = 0;
 
+	// Build the 8 byte Nonce
 	uint8_t nonce[NONCE_LEN];
 
+	// Bytes 0-1: Company ID (nordic 0x0059) in little-endian
+	uint16_t cid = sys_cpu_to_le16(0x0059); 
+	memcpy(nonce, &cid, sizeof(cid));
+
+	// Bytes 2-7: 48-bit packet counter, big-endian 
 	nonce_counter++;
-	sys_put_be64(nonce_counter, nonce);
+	sys_put_be48(nonce_counter, &nonce[2]);
 
 	uint8_t iv_buffer_for_api[PSA_BLOCK_CIPHER_BLOCK_LENGTH(PSA_KEY_TYPE_AES)]; // Should be 16
 	memset(iv_buffer_for_api, 0, sizeof(iv_buffer_for_api));					// Zero pad
@@ -821,7 +840,7 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	size_t olen = 0;		   // For output length from PSA functions
 	size_t ciphertext_len = 0; // Accumulate total ciphertext written
 
-	st = psa_cipher_encrypt_setup(&op, kid, PSA_ALG_CTR);
+	st = psa_cipher_encrypt_setup(&op, g_aes_key_id, PSA_ALG_CTR);
 	if (st != PSA_SUCCESS)
 	{
 		LOG_ERR("Failed to setup cipher encryption: %d", st);
@@ -837,12 +856,14 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 		ret = -EFAULT;
 		goto cleanup_op; // Abort the operation
 	}
-	// ------------------------------------------------------
+
+	// --- Copy the actual 8-byte nonce to the output buffer ---
+	memcpy(out, nonce, NONCE_LEN);
 
 	// Encrypt data, placing ciphertext *after* the nonce space in 'out'
 	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
-						   out + NONCE_LEN,			/* Output buffer starts after nonce */
-						   SENSOR_DATA_PACKET_SIZE, /* Max capacity for ciphertext */
+						   out + NONCE_LEN,			// Output buffer starts after nonce 
+						   SENSOR_DATA_PACKET_SIZE, // Max capacity for ciphertext 
 						   &olen);
 	if (st != PSA_SUCCESS)
 	{
@@ -854,8 +875,8 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 
 	// Finish the operation (usually produces no more output for CTR)
 	st = psa_cipher_finish(&op,
-						   out + NONCE_LEN + ciphertext_len,		 /* Where to write if any */
-						   SENSOR_DATA_PACKET_SIZE - ciphertext_len, /* Remaining capacity */
+						   out + NONCE_LEN + ciphertext_len,		 // Where to write if any
+						   SENSOR_DATA_PACKET_SIZE - ciphertext_len, // Remaining capacity
 						   &olen);
 	if (st != PSA_SUCCESS)
 	{
@@ -865,8 +886,7 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	}
 	ciphertext_len += olen;
 
-	// --- CRITICAL FIX: Copy the actual 8-byte nonce to the output buffer ---
-	memcpy(out, nonce, NONCE_LEN);
+	
 	// Now 'out' contains [ 8-byte nonce | 20-byte ciphertext ]
 	// --------------------------------------------------------------------
 
