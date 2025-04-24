@@ -227,8 +227,8 @@ static const struct bt_le_scan_param scan_param = {
 	.window = BT_GAP_SCAN_FAST_WINDOW,
 };
 
-// Flag set by scan_cb to confirm at home
-static volatile bool heartbeat_received_this_cycle = false;
+static volatile bool heartbeat_received_this_cycle = false; // Flag set by scan_cb to confirm at home
+static volatile bool adv_running = false; 					// Flag indicating adv or not 
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -328,6 +328,11 @@ static void start_advertising(void)
 {
 	int ret;
 
+	if (adv_running)
+	{
+		return; 
+	}
+
 	ret = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 
 	if (ret && ret != -EALREADY)
@@ -336,6 +341,7 @@ static void start_advertising(void)
 	}
 	else
 	{
+		adv_running = true; 
 		LOG_INF("Advertising started/updated");
 	}
 }
@@ -345,11 +351,16 @@ static void start_advertising(void)
  */
 static void stop_advertising(void)
 {
+	if (!adv_running)
+	{
+		return; 
+	}
+	
 	int ret = bt_le_adv_stop();
 
 	if (ret == 0 || ret == -EALREADY)
 	{
-		k_msleep(100);
+		adv_running = false; 
 		LOG_INF("Advertising stopped");
 	}
 	else
