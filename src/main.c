@@ -50,22 +50,22 @@ LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
 /* -------------------- Encryption -------------------- */
 
 static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL;
-static uint64_t nonce_counter = 0;			// unique nonce for each BLE message
-#define BORUS_SETTINGS_PATH "borus/state"	// save nonce in NVM, allow reboot 
+static uint64_t nonce_counter = 0;		  // unique nonce for each BLE message
+#define BORUS_SETTINGS_PATH "borus/state" // save nonce in NVM, allow reboot
 
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 		1024
-#define BMP390_HANDLER_STACKSIZE 		1024
-#define BLE_LOGGER_THREAD_STACKSIZE 	4096
-#define SCANNER_THREAD_STACKSIZE 		1024
+#define BMI270_HANDLER_STACKSIZE 1024
+#define BMP390_HANDLER_STACKSIZE 1024
+#define BLE_LOGGER_THREAD_STACKSIZE 4096
+#define SCANNER_THREAD_STACKSIZE 1024
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 	5 	// Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 	6 	// Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 		7	// Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 	7 	// Lower priority tasks for scan AP heartbeat
+#define BMI270_HANDLER_PRIORITY 5 // Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 6 // Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 7	  // Lower priority tasks for BLE and logging
+#define SCANNER_THREAD_PRIORITY 7 // Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -162,25 +162,25 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 			1000									// Read environment at 1 Hz
-#define BATTERY_READ_INTERVAL 			K_MINUTES(15) 							// Every 15 minute read one battery voltage
-#define HEARTBEAT_TIMEOUT 				K_SECONDS(90)							// If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 			32										// BLE advertise interval 32*0.625 ms
-#define BLE_ADV_INTERVAL_MAX 			33										// BLE advertise interval 
-#define SENSOR_DATA_PACKET_SIZE 		20 										// Size of the sensor data
-#define NONCE_LEN 						8										// Size of the encryption nonce
-#define ENC_ADV_PAYLOAD_LEN 			(NONCE_LEN + SENSOR_DATA_PACKET_SIZE)	// Size of the packet data
-#define SCAN_INTERVAL 					K_MINUTES(1)							// BLE scan interval, start scan every 1 minute
-#define SCAN_WINDOW 					K_SECONDS(5)							// BLE scan window, when started, scan for 5 seconds
-#define TARGET_AP_ADDR 					"2C:CF:67:89:E0:5D" 					// Address for TORUS_1
-#define PRESSURE_BASE_HPA_X10 			9000			   						// Base offset in hPa x 10
-#define TEMPERATURE_LOW_LIMIT 			30		   								// -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT 			40		   								// +40 degree as the highest temperature of interest
+#define BMP390_READ_INTERVAL 1000								  // Read environment at 1 Hz
+#define BATTERY_READ_INTERVAL K_MINUTES(15)						  // Every 15 minute read one battery voltage
+#define HEARTBEAT_TIMEOUT K_SECONDS(90)							  // If no heartbeat for 90s, assume away
+#define BLE_ADV_INTERVAL_MIN 32									  // BLE advertise interval 32*0.625 ms
+#define BLE_ADV_INTERVAL_MAX 33									  // BLE advertise interval
+#define SENSOR_DATA_PACKET_SIZE 20								  // Size of the sensor data
+#define NONCE_LEN 8												  // Size of the encryption nonce
+#define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE) // Size of the packet data
+#define SCAN_INTERVAL K_MINUTES(1)								  // BLE scan interval, start scan every 1 minute
+#define SCAN_WINDOW K_SECONDS(5)								  // BLE scan window, when started, scan for 5 seconds
+#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D"						  // Address for TORUS_1
+#define PRESSURE_BASE_HPA_X10 9000								  // Base offset in hPa x 10
+#define TEMPERATURE_LOW_LIMIT 30								  // -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT 40								  // +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
-#define LOG_FILE_PATH 		"/lfs1/imu_log.bin"
-#define LFS_MOUNT_POINT 	"/lfs1"
+#define LOG_FILE_PATH "/lfs1/imu_log.bin"
+#define LFS_MOUNT_POINT "/lfs1"
 
 USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00");
 
@@ -228,7 +228,7 @@ static const struct bt_le_scan_param scan_param = {
 };
 
 static volatile bool heartbeat_received_this_cycle = false; // Flag set by scan_cb to confirm at home
-static volatile bool adv_running = false; 					// Flag indicating adv or not 
+static volatile bool adv_running = false;					// Flag indicating adv or not
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -330,7 +330,7 @@ static void start_advertising(void)
 
 	if (adv_running)
 	{
-		return; 
+		return;
 	}
 
 	ret = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
@@ -341,7 +341,7 @@ static void start_advertising(void)
 	}
 	else
 	{
-		adv_running = true; 
+		adv_running = true;
 		LOG_INF("Advertising started/updated");
 	}
 }
@@ -353,14 +353,14 @@ static void stop_advertising(void)
 {
 	if (!adv_running)
 	{
-		return; 
+		return;
 	}
-	
+
 	int ret = bt_le_adv_stop();
 
 	if (ret == 0 || ret == -EALREADY)
 	{
-		adv_running = false; 
+		adv_running = false;
 		LOG_INF("Advertising stopped");
 	}
 	else
@@ -447,15 +447,16 @@ static void queue_initial_battery_level(void)
 	if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 	{
 		LOG_WRN("Initial battery queue full - value dropped");
-	} else 
+	}
+	else
 	{
-		LOG_INF("Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV); 
+		LOG_INF("Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
 	}
 }
 
 /**
  * @brief Callback function for battery timeout workqueue. This reads battery
- * voltage and push to the message queue 
+ * voltage and push to the message queue
  */
 static void battery_timeout_work_handler(struct k_work *work)
 {
@@ -662,7 +663,7 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 	// Pressure (Convert to uint16_t offset Pascals)
 	uint16_t pressure_x10hpa = (uint16_t)data->pressure;
 	uint16_t pressure_offset = 0;
-	
+
 	if (pressure_x10hpa >= PRESSURE_BASE_HPA_X10)
 	{
 		pressure_offset = pressure_x10hpa - PRESSURE_BASE_HPA_X10;
@@ -776,7 +777,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 		{
 			sensor_message_t msg = {.type = SENSOR_MSG_TYPE_ENVIRONMENT};
 			msg.payload.env.temperature = (uint16_t)(sensor_value_to_double(&temp) * 100);
-			msg.payload.env.pressure = (uint32_t)(sensor_value_to_double(&press) * 100);	// kPa x 100 = hPa x 10 gives 0.1 hPa resolution
+			msg.payload.env.pressure = (uint32_t)(sensor_value_to_double(&press) * 100); // kPa x 100 = hPa x 10 gives 0.1 hPa resolution
 			msg.payload.env.timestamp = k_uptime_get_32();
 
 			if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
@@ -785,7 +786,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 			}
 
 			LOG_DBG("Timestamp: %u, Temperature: %.2f, Pressure: %.1f",
-					msg.payload.env.timestamp, 
+					msg.payload.env.timestamp,
 					(double)(msg.payload.env.temperature / 100),
 					(double)(msg.payload.env.pressure / 10.0));
 		}
@@ -837,13 +838,13 @@ SETTINGS_STATIC_HANDLER_DEFINE(
 
 /**
  * @brief Encrypte sensor data using AES-CTR mode.
- * 
+ *
  * The encrypted BLE data packet is:
- * 
+ *
  * Nonce (8 bytes)
  *  - Company ID (2 bytes) | Nonce (6 bytes)
  * Sensor Data (20 bytes)
- * 
+ *
  */
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 {
@@ -852,7 +853,7 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 		LOG_ERR("AES key handle is not valid");
 		return -EPERM;
 	}
-	
+
 	psa_status_t st;
 	int ret = 0;
 
@@ -860,10 +861,10 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	uint8_t nonce[NONCE_LEN];
 
 	// Bytes 0-1: Company ID (nordic 0x0059) in little-endian
-	uint16_t cid = sys_cpu_to_le16(0x0059); 
+	uint16_t cid = sys_cpu_to_le16(0x0059);
 	memcpy(nonce, &cid, sizeof(cid));
 
-	// Bytes 2-7: 48-bit packet counter, big-endian 
+	// Bytes 2-7: 48-bit packet counter, big-endian
 	nonce_counter++;
 	sys_put_be48(nonce_counter, &nonce[2]);
 
@@ -897,8 +898,8 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 
 	// Encrypt data, placing ciphertext *after* the nonce space in 'out'
 	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
-						   out + NONCE_LEN,			// Output buffer starts after nonce 
-						   SENSOR_DATA_PACKET_SIZE, // Max capacity for ciphertext 
+						   out + NONCE_LEN,			// Output buffer starts after nonce
+						   SENSOR_DATA_PACKET_SIZE, // Max capacity for ciphertext
 						   &olen);
 	if (st != PSA_SUCCESS)
 	{
@@ -921,7 +922,6 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	}
 	ciphertext_len += olen;
 
-	
 	// Now 'out' contains [ 8-byte nonce | 20-byte ciphertext ]
 	// --------------------------------------------------------------------
 
@@ -1392,7 +1392,7 @@ int main(void)
 		return -1;
 	}
 	// Push initial battery pct to queue
-	queue_initial_battery_level(); 
+	queue_initial_battery_level();
 
 	LOG_INF("Step 4: Enable battery voltage measurement");
 
