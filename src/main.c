@@ -429,6 +429,30 @@ static void enter_state(device_state_t new_state)
 	}
 }
 
+static void queue_initial_battery_level(void)
+{
+	int batt_mV = battery_sample();
+	if (batt_mV < 0)
+	{
+		LOG_ERR("Initial battery read failed: %d", batt_mV);
+		return;
+	}
+
+	unsigned int batt_pptt = battery_level_pptt(batt_mV, levels);
+
+	sensor_message_t msg = {.type = SENSOR_MSG_TYPE_BATTERY};
+	msg.payload.batt.battery = (uint8_t)(batt_pptt / 100);
+	msg.payload.batt.timestamp = k_uptime_get_32();
+
+	if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
+	{
+		LOG_WRN("Initial battery queue full - value dropped");
+	} else 
+	{
+		LOG_INF("Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV); 
+	}
+}
+
 /**
  * @brief Callback function for battery timeout workqueue. This reads battery
  * voltage and push to the message queue 
@@ -1367,6 +1391,8 @@ int main(void)
 		LOG_ERR("Failed to initialise battery measurement: %d", ret);
 		return -1;
 	}
+	// Push initial battery pct to queue
+	queue_initial_battery_level(); 
 
 	LOG_INF("Step 4: Enable battery voltage measurement");
 
