@@ -461,7 +461,7 @@ static void queue_initial_battery_level(void)
 	}
 	else
 	{
-		LOG_INF("Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
+		LOG_INF("Step 4.2: Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
 	}
 }
 
@@ -1408,10 +1408,10 @@ int main(void)
 		LOG_ERR("Failed to initialise battery measurement: %d", ret);
 		return -1;
 	}
+	LOG_INF("Step 4.1: Enable battery voltage measurement");
+
 	// Push initial battery pct to queue
 	queue_initial_battery_level();
-
-	LOG_INF("Step 4: Enable battery voltage measurement");
 
 	struct fs_mount_t *mp = &lfs_mount_p;
 
@@ -1431,7 +1431,7 @@ int main(void)
 		if (fs_statvfs(mp->mnt_point, &stats) == 0)
 		{
 			LOG_INF("%s: bsize = %lu ; frsize = %lu ;"
-					" blocks = %lu ; bfree = %lu\n",
+					" blocks = %lu ; bfree = %lu",
 					mp->mnt_point,
 					stats.f_bsize, stats.f_frsize,
 					stats.f_blocks, stats.f_bfree);
