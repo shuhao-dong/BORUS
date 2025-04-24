@@ -173,7 +173,7 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 #define SCAN_INTERVAL K_MINUTES(1)								  // BLE scan interval, start scan every 1 minute
 #define SCAN_WINDOW K_SECONDS(5)								  // BLE scan window, when started, scan for 5 seconds
 #define TARGET_AP_ADDR "2C:CF:67:89:E0:5D"						  // Address for TORUS_1
-#define PRESSURE_BASE_HPA_X10 9000								  // Base offset in hPa x 10
+#define PRESSURE_BASE_HPA_X10 8500								  // Base offset in hPa x 10
 #define TEMPERATURE_LOW_LIMIT 30								  // -30 degree as the lowest temperature of interest
 #define TEMPERATURE_HIGH_LIMIT 40								  // +40 degree as the highest temperature of interest
 
