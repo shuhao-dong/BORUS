@@ -18,7 +18,7 @@
 
 #include "battery.h"
 
-LOG_MODULE_REGISTER(BATTERY, CONFIG_ADC_LOG_LEVEL);
+// LOG_MODULE_REGISTER(BATTERY, CONFIG_ADC_LOG_LEVEL);
 
 #define VBATT DT_PATH(vbatt)
 #define ZEPHYR_USER DT_PATH(zephyr_user)
@@ -90,19 +90,19 @@ static int divider_setup(void)
 	int rc;
 
 	if (!device_is_ready(ddp->adc)) {
-		LOG_ERR("ADC device is not ready %s", ddp->adc->name);
+		// LOG_ERR("ADC device is not ready %s", ddp->adc->name);
 		return -ENOENT;
 	}
 
 	if (gcp->port) {
 		if (!device_is_ready(gcp->port)) {
-			LOG_ERR("%s: device not ready", gcp->port->name);
+			// LOG_ERR("%s: device not ready", gcp->port->name);
 			return -ENOENT;
 		}
 		rc = gpio_pin_configure_dt(gcp, GPIO_OUTPUT_INACTIVE);
 		if (rc != 0) {
-			LOG_ERR("Failed to control feed %s.%u: %d",
-				gcp->port->name, gcp->pin, rc);
+			// LOG_ERR("Failed to control feed %s.%u: %d",
+			// 	gcp->port->name, gcp->pin, rc);
 			return rc;
 		}
 	}
@@ -135,7 +135,7 @@ static int divider_setup(void)
 #endif /* CONFIG_ADC_var */
 
 	rc = adc_channel_setup(ddp->adc, accp);
-	LOG_INF("Setup AIN%u got %d", iocp->channel, rc);
+	// LOG_INF("Setup AIN%u got %d", iocp->channel, rc);
 
 	return rc;
 }
@@ -147,7 +147,7 @@ static int battery_setup(void)
 	int rc = divider_setup();
 
 	battery_ok = (rc == 0);
-	LOG_INF("Battery setup: %d %d", rc, battery_ok);
+	// LOG_INF("Battery setup: %d %d", rc, battery_ok);
 	return rc;
 }
 
@@ -190,11 +190,11 @@ int battery_sample(void)
 			if (dcp->output_ohm != 0) {
 				rc = val * (uint64_t)dcp->full_ohm
 					/ dcp->output_ohm;
-				LOG_INF("raw %u ~ %u mV => %d mV\n",
-					ddp->raw, val, rc);
+				// LOG_INF("raw %u ~ %u mV => %d mV\n",
+				// 	ddp->raw, val, rc);
 			} else {
 				rc = val;
-				LOG_INF("raw %u ~ %u mV\n", ddp->raw, val);
+				// LOG_INF("raw %u ~ %u mV\n", ddp->raw, val);
 			}
 		}
 	}
