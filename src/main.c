@@ -30,7 +30,7 @@
 #include <zephyr/bluetooth/gatt.h>
 #include "driver/bmi270.h"
 #include <math.h>
-#include "battery.h"
+#include "driver/battery.h"
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/ring_buffer.h>
