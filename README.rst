@@ -39,5 +39,17 @@ Build errors
 Read External Flash File
 ************************
 
+To extract file saved in the external flash, we use `littlefs-fuse <https://github.com/littlefs-project/littlefs-fuse>`_ 
+After setting up, navigate to littlefs-fuse, make sure to have sudo right for the following operation::
 
+  sudo chmod a+rw /dev/sda # Run lsblk to confirm the disk name
+  mkdir mount
+  ./lfs --block_count=1760 --block_size=4096 --read_size=16 --prog_size=16 --cache_size=64 --lookahead_size=32 /dev/sda mount 
 
+Make sure the block size, read size, prog size, cache size and lookahead size is the same as the output from your application::
+
+  [00:00:00.059,661] <inf> littlefs: LittleFS version 2.8, disk version 2.1  
+  [00:00:00.061,065] <inf> littlefs: FS at mx25r6435f@0:0x120000 is 1760 0x1000-byte blocks with 512 cycle
+  [00:00:00.061,065] <inf> littlefs: sizes: rd 16 ; pr 16 ; ca 64 ; la 32
+
+The above log shows: block size = 4096 as 0x1000, read size = 16 as rd 16, prog size=16 as pr 16, cache size = 64 as ca 64, lookahead size = 32 as la 32.
