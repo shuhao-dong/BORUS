@@ -212,7 +212,7 @@ typedef struct
 
 // BLE advertisement parameters
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
-	BT_LE_ADV_OPT_USE_IDENTITY, // Use identity MAC for advertisement
+	BT_LE_ADV_OPT_SCANNABLE | BT_LE_ADV_OPT_USE_IDENTITY, // Use identity MAC for advertisement
 	BLE_ADV_INTERVAL_MIN,		// Min advertisement interval (min * 0.625)
 	BLE_ADV_INTERVAL_MAX,		// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
 	NULL						// not directed, pass NULL
