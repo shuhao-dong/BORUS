@@ -10,15 +10,9 @@ tested on Nordic Thingy53. Helper tools are included.
     BORUS/
     ├── src/                 # Sources files for wearable
     │   ├── driver/          # Driver files
-    │   └── main.c           # Cleaned and preprocessed data
-    ├── notebooks/            # Jupyter notebooks for exploration
-    ├── src/                  # Source code
-    │   ├── __init__.py
-    │   └── utils.py          # Utility functions
-    ├── tests/                # Unit and integration tests
-    ├── README.rst            # Project documentation
-    ├── requirements.txt      # Python dependencies
-    └── setup.py              # Setup script for pip installation
+    │   └── main.c           # Main source code firmware
+    ├── sysbuild/            # Configuration used for sysbuild
+    └── tools/               # Helper tools
 
 Requirements
 ************
