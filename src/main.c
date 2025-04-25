@@ -50,21 +50,20 @@ LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
 /* -------------------- Watchdog Timer --------------------*/
 
-#define WDT_TIMEOUT_MS 4000
-#define WDT_FEED_INTERVAL_MS 1000
+#define WDT_TIMEOUT_MS 4000		  // Watchdog timeout
+#define WDT_FEED_INTERVAL_MS 1000 // Watchdog feed interval
 
-static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt);
-;
-static int wdt_channel_id = -1;
-static struct k_timer wdt_feed_timer;
+static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); // Get the WDT device
+static int wdt_channel_id = -1;											 // Initialize the WDT channel ID
+static struct k_timer wdt_feed_timer;									 // Timer for feeding the watchdog
 
-/* -------------------- Encryption -------------------- */
+/* -------------------- BLE Packet Encryption -------------------- */
 
-#define BORUS_SETTINGS_PATH "borus/state" // save nonce in NVM, allow reboot
-#define NONCE_SAVE_INTERVAL 5 * 60 * 1000 // save nonce every 5 minutes
+#define BORUS_SETTINGS_PATH "borus/state" // Save nonce in NVM, allow reboot
+#define NONCE_SAVE_INTERVAL 5 * 60 * 1000 // Save nonce every 5 minutes
 
-static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL;
-static uint64_t nonce_counter = 0; // unique nonce for each BLE message
+static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
+static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -191,10 +190,10 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 
 /* -------------------- File system and MSC -------------------- */
 
-#define LOG_FILE_PATH "/lfs1/imu_log.bin"
-#define LFS_MOUNT_POINT "/lfs1"
+#define LOG_FILE_PATH "/lfs1/imu_log.bin" // File path for the log file
+#define LFS_MOUNT_POINT "/lfs1"			  // Mount point for the file system
 
-USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00");
+USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00"); // Define the USB MSC LUN
 
 /* -------------------- BLE Configurations -------------------- */
 
@@ -208,8 +207,8 @@ typedef struct
 	uint8_t battery;
 } ble_packet_t;
 
-#define DEVICE_NAME CONFIG_BT_DEVICE_NAME
-#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
+#define DEVICE_NAME CONFIG_BT_DEVICE_NAME		  // Device name for BLE
+#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1) // Length of the device name
 
 // BLE advertisement parameters
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
@@ -242,10 +241,10 @@ static const struct bt_le_scan_param scan_param = {
 // Define the list of target AP addresses
 static const char *target_ap_addrs[] = {
 	"2C:CF:67:89:E0:5D",
-	"AA:BB:CC:DD:EE:FF", 
+	"AA:BB:CC:DD:EE:FF",
 };
-static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs); 
-static volatile bool adv_running = false;					// Flag indicating adv or not
+static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);
+static volatile bool adv_running = false; // Flag indicating adv or not
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -696,7 +695,7 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type, str
 			k_work_submit(&scan_found_ap_work);
 
 			LOG_HEXDUMP_DBG(buf->data, buf->len, "Adv Data: ");
-			break; 
+			break;
 		}
 	}
 }
@@ -981,7 +980,6 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 		LOG_ERR("AES key handle is not valid");
 		return -EPERM;
 	}
-
 	psa_status_t st;
 	int ret = 0;
 
@@ -989,7 +987,7 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	uint8_t nonce[NONCE_LEN];
 
 	// Bytes 0-1: Company ID (nordic 0x0059) in little-endian
-	uint16_t cid = sys_cpu_to_le16(0x0059);
+	static uint16_t cid = sys_cpu_to_le16(0x0059);
 	memcpy(nonce, &cid, sizeof(cid));
 
 	// Bytes 2-7: 48-bit packet counter, big-endian
@@ -1095,7 +1093,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	current_sensor_state.timestamp = k_uptime_get_32(); // Set initial timestamp
 	bool state_needs_update = false;					// Flag to reduce ADV updates
 
-	uint32_t save_timer = k_uptime_get_32();	// Timer for saving nonce 
+	uint32_t save_timer = k_uptime_get_32(); // Timer for saving nonce
 
 	struct fs_file_t log_file;			  // File object for littlefs
 	bool file_is_open = false;			  // Track if log file is currently open
