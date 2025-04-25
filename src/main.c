@@ -185,7 +185,6 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 #define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE) // Size of the packet data
 #define SCAN_INTERVAL K_MINUTES(1)								  // BLE scan interval, start scan every 1 minute
 #define SCAN_WINDOW K_SECONDS(5)								  // BLE scan window, when started, scan for 5 seconds
-#define TARGET_AP_ADDR "2C:CF:67:89:E0:5D"						  // Address for TORUS_1
 #define PRESSURE_BASE_HPA_X10 8500								  // Base offset in hPa x 10
 #define TEMPERATURE_LOW_LIMIT 30								  // -30 degree as the lowest temperature of interest
 #define TEMPERATURE_HIGH_LIMIT 40								  // +40 degree as the highest temperature of interest
@@ -240,7 +239,12 @@ static const struct bt_le_scan_param scan_param = {
 	.window = BT_GAP_SCAN_FAST_WINDOW,
 };
 
-static volatile bool heartbeat_received_this_cycle = false; // Flag set by scan_cb to confirm at home
+// Define the list of target AP addresses
+static const char *target_ap_addrs[] = {
+	"2C:CF:67:89:E0:5D",
+	"AA:BB:CC:DD:EE:FF", 
+};
+static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs); 
 static volatile bool adv_running = false;					// Flag indicating adv or not
 
 /* -------------------- IMU Configurations -------------------- */
@@ -322,8 +326,13 @@ static struct fs_mount_t lfs_mount_p = {
 /* -------------------- State Management Functions -------------------- */
 
 /**
- * @brief Set IMU to with different sample frequency
- * @param high_rate Use high sample rate if set true
+ * @brief Set the IMU sampling rate and configuration.
+ *
+ * This function configures the IMU to use either a high or low sampling rate
+ * based on the provided parameter. It adjusts both accelerometer and gyroscope
+ * settings accordingly.
+ *
+ * @param high_rate Set to true for high sampling rate, false for low sampling rate.
  */
 static void set_imu_rate(bool high_rate)
 {
@@ -338,6 +347,9 @@ static void set_imu_rate(bool high_rate)
 
 /**
  * @brief Start BLE advertising when enter HOME state
+ *
+ * This function starts BLE advertising with the specified parameters and data.
+ * It will not start if already running.
  */
 static void start_advertising(void)
 {
@@ -363,6 +375,8 @@ static void start_advertising(void)
 
 /**
  * @brief Stop BLE advertising when enter AWAY state
+ *
+ * This function stops BLE advertising. It will not stop if already stopped.
  */
 static void stop_advertising(void)
 {
@@ -385,8 +399,12 @@ static void stop_advertising(void)
 }
 
 /**
- * @brief Central function to manage state transitions and associated actions
- * @param new_state The target state to enter
+ * @brief Manage state transitions and associated actions.
+ *
+ * This function handles entering and exiting states, performing the necessary
+ * actions for each state transition.
+ *
+ * @param new_state The target state to enter.
  */
 static void enter_state(device_state_t new_state)
 {
@@ -444,6 +462,12 @@ static void enter_state(device_state_t new_state)
 	}
 }
 
+/**
+ * @brief Queue the initial battery level to the message queue.
+ *
+ * This function reads the initial battery voltage and queues it to the
+ * message queue for processing.
+ */
 static void queue_initial_battery_level(void)
 {
 	int batt_mV = battery_sample();
@@ -470,8 +494,12 @@ static void queue_initial_battery_level(void)
 }
 
 /**
- * @brief Callback function for battery timeout workqueue. This reads battery
- * voltage and push to the message queue
+ * @brief Handle battery timeout events.
+ *
+ * This function is called when the battery timer expires. It reads the battery
+ * voltage, calculates the battery percentage, and queues the data for processing.
+ *
+ * @param work Pointer to the work structure.
  */
 static void battery_timeout_work_handler(struct k_work *work)
 {
@@ -498,8 +526,12 @@ static void battery_timeout_work_handler(struct k_work *work)
 }
 
 /**
- * @brief Callback function for heartbeat timeout workqueue. This
- * checks if we received heartbeat from APs to confirm we are still at home
+ * @brief Handle heartbeat timeout events.
+ *
+ * This function is called when the heartbeat timer expires. It transitions the
+ * device to the AWAY state if the current state is HOME.
+ *
+ * @param work Pointer to the work structure.
  */
 static void heartbeat_timeout_work_handler(struct k_work *work)
 {
@@ -517,8 +549,12 @@ static void heartbeat_timeout_work_handler(struct k_work *work)
 }
 
 /**
- * @brief Callback function for USB connection workqueue. This checks if our
- * device is plugged in to the docking station
+ * @brief Handle USB connection events.
+ *
+ * This function is called when the USB is connected. It transitions the device
+ * to the CHARGING state.
+ *
+ * @param work Pointer to the work structure.
  */
 static void usb_connect_work_handler(struct k_work *work)
 {
@@ -532,8 +568,12 @@ static void usb_connect_work_handler(struct k_work *work)
 }
 
 /**
- * @brief Callback function for USB disconnection workqueue. This checks if our
- * device is unplugged from the docking station
+ * @brief Handle USB disconnection events.
+ *
+ * This function is called when the USB is disconnected. It transitions the device
+ * to the HOME state.
+ *
+ * @param work Pointer to the work structure.
  */
 static void usb_disconnect_work_handler(struct k_work *work)
 {
@@ -547,8 +587,12 @@ static void usb_disconnect_work_handler(struct k_work *work)
 }
 
 /**
- * @brief Callback function for scanner workqueue. This handles state transition to
- * HOME state. Needed to offload since BLE blocks.
+ * @brief Handle AP scan results and transition to HOME state.
+ *
+ * This function is called when a target AP is found during scanning. It transitions
+ * the device to the HOME state and restarts the heartbeat timer.
+ *
+ * @param k_work Pointer to the work structure.
  */
 static void scan_found_ap_work_handler(struct k_work *k_work)
 {
@@ -567,7 +611,14 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 }
 
 /**
- * @brief ISR for bmi270 interrupt event, just give semaphore
+ * @brief ISR for BMI270 interrupt events.
+ *
+ * This function is triggered when the BMI270 interrupt pin is activated. It
+ * signals the BMI270 handler thread using a semaphore.
+ *
+ * @param dev Pointer to the device structure.
+ * @param cb Pointer to the GPIO callback structure.
+ * @param pins Pin mask for the interrupt.
  */
 void bmi270_int1_interrupt_triggered(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
@@ -575,25 +626,41 @@ void bmi270_int1_interrupt_triggered(const struct device *dev, struct gpio_callb
 }
 
 /**
- * @brief Callback function when battery timer expires. Offloaded to a workqueue.
+ * @brief Handle battery timer expiry events.
+ *
+ * This function is called when the battery timer expires. It submits the battery
+ * timeout work to the workqueue.
+ *
+ * @param timer_id Pointer to the timer structure.
  */
 void battery_timer_expiry(struct k_timer *timer_id)
 {
-	// This timer fires only if it wasn't stopped by receiving a heartbeat
 	LOG_DBG("Heartbeat timer expired, submitting work");
 	k_work_submit(&battery_timeout_work);
 }
 
 /**
- * @brief Offload to workqueue when heartbeat timer expires
+ * @brief Handle heartbeat timer expiry events.
+ *
+ * This function is called when the heartbeat timer expires. It submits the
+ * heartbeat timeout work to the workqueue.
+ *
+ * @param timer_id Pointer to the timer structure.
  */
 void heartbeat_timeout_expiry(struct k_timer *timer_id)
 {
-	// This timer fires only if it wasn't stopped by receiving a heartbeat
 	LOG_DBG("Heartbeat timer expired, submitting work");
 	k_work_submit(&heartbeat_timeout_work);
 }
 
+/**
+ * @brief Feed the watchdog timer to prevent timeout.
+ *
+ * This function is called periodically to feed the watchdog timer and prevent
+ * it from timing out.
+ *
+ * @param timer_id Pointer to the timer structure.
+ */
 static void watchdog_feed(struct k_timer *timer_id)
 {
 	const struct device *dev = (const struct device *)k_timer_user_data_get(timer_id);
@@ -601,33 +668,47 @@ static void watchdog_feed(struct k_timer *timer_id)
 }
 
 /**
- * @brief BLE scanner callback function to receive heartbeat information. Maybe receive more information
- * from APs, TBD.
+ * @brief Callback function for BLE scanning.
+ *
+ * This function is called when a BLE advertisement is received. It checks if
+ * the advertisement is from a target AP and submits the scan found AP work
+ * to the workqueue.
+ *
+ * @param addr Pointer to the Bluetooth address of the advertiser.
+ * @param rssi Received signal strength indicator.
+ * @param adv_type Advertisement type.
+ * @param buf Pointer to the advertisement data buffer.
  */
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type, struct net_buf_simple *buf)
 {
 	char addr_str[BT_ADDR_LE_STR_LEN];
-	static const char target_addr[] = TARGET_AP_ADDR;
 
 	/* Convert the address to a string -- We only want the address part, not the type part */
 	bt_addr_to_str(&addr->a, addr_str, sizeof(addr_str));
 
-	if (strcmp(addr_str, target_addr) == 0)
+	for (size_t i = 0; i < num_target_aps; i++)
 	{
-		LOG_INF("Heartbeat received from AP (%s)", addr_str);
-		heartbeat_received_this_cycle = true; // Set flag for scanner thread
-
-		k_work_submit(&scan_found_ap_work);
-
-		for (int i = 0; i < buf->len; i++)
+		if (strcmp(addr_str, target_ap_addrs[i]) == 0)
 		{
-			LOG_INF("0x%02X", buf->data[i]);
+			LOG_INF("Heartbeat received from AP (%s), RSSI: %d", addr_str, rssi);
+
+			// Submit to work item for state transition
+			k_work_submit(&scan_found_ap_work);
+
+			LOG_HEXDUMP_DBG(buf->data, buf->len, "Adv Data: ");
+			break; 
 		}
 	}
 }
 
 /**
- * @brief Callbacks when USB is connected to detect USB state
+ * @brief Callback function for USB device status changes.
+ *
+ * This function is called when the USB device status changes. It handles
+ * connection and disconnection events, as well as configuration events.
+ *
+ * @param status The new USB device status.
+ * @param param Pointer to additional parameters (not used).
  */
 static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *param)
 {
@@ -656,11 +737,14 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 /* -------------------- Data Preparation -------------------- */
 
 /**
- * @brief Unpad message queue to save space for BLE packet
+ * @brief Prepare a BLE packet from sensor data.
  *
- * @param data Pointer to the received message queue
- * @param buffer Pointer to the actual BLE packet
+ * This function encodes sensor data into a BLE packet format, ensuring that
+ * the data fits within the specified buffer size.
  *
+ * @param data Pointer to the sensor data structure.
+ * @param buffer Pointer to the output buffer.
+ * @param buffer_size Size of the output buffer.
  */
 void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_size)
 {
@@ -709,7 +793,16 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 
 /* ----------------------------------------------------------------------------- */
 
-/* BMI270 handler thread */
+/**
+ * @brief BMI270 handler thread function.
+ *
+ * This thread handles BMI270 interrupt events, reads IMU data, and queues
+ * the data for further processing.
+ *
+ * @param unused1 Unused parameter.
+ * @param unused2 Unused parameter.
+ * @param unused3 Unused parameter.
+ */
 static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 {
 	ARG_UNUSED(unused1);
@@ -760,7 +853,16 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
-/* BMP390 hanlder thread: simulated by BME680 pulling  */
+/**
+ * @brief BMP390 handler thread function.
+ *
+ * This thread periodically reads environmental data from the BMP390 sensor
+ * and queues the data for further processing.
+ *
+ * @param unused1 Unused parameter.
+ * @param unused2 Unused parameter.
+ * @param unused3 Unused parameter.
+ */
 static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 {
 	ARG_UNUSED(unused1);
@@ -814,7 +916,18 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
-// This function gets called by settings_load() if the key is found
+/**
+ * @brief Settings handler for loading the nonce counter.
+ *
+ * This function is called by the settings subsystem to load the nonce counter
+ * from persistent storage.
+ *
+ * @param name Name of the setting.
+ * @param len Length of the setting value.
+ * @param read_cb Callback function to read the setting value.
+ * @param cb_arg Argument for the read callback.
+ * @return 0 on success, negative error code on failure.
+ */
 static int settings_handle_nonce_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
 	LOG_DBG("Settings handler entered for key: %s (len: %d)", name ? name : "NULL", len);
@@ -852,14 +965,14 @@ SETTINGS_STATIC_HANDLER_DEFINE(
 	NULL);
 
 /**
- * @brief Encrypte sensor data using AES-CTR mode.
+ * @brief Encrypt sensor data using AES-CTR mode.
  *
- * The encrypted BLE data packet is:
+ * This function encrypts a 20-byte sensor data block using AES-CTR mode and
+ * appends an 8-byte nonce to the output buffer.
  *
- * Nonce (8 bytes)
- *  - Company ID (2 bytes) | Nonce (6 bytes)
- * Sensor Data (20 bytes)
- *
+ * @param plain Pointer to the plaintext data.
+ * @param out Pointer to the output buffer.
+ * @return 0 on success, negative error code on failure.
  */
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 {
@@ -938,7 +1051,6 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	ciphertext_len += olen;
 
 	// Now 'out' contains [ 8-byte nonce | 20-byte ciphertext ]
-	// --------------------------------------------------------------------
 
 	// --- Verification ---
 	if (ciphertext_len != SENSOR_DATA_PACKET_SIZE)
@@ -960,8 +1072,14 @@ cleanup:
 }
 
 /**
- * @brief Consumer thread to send data via BLE advertisement or log data to
- * the external flash using littlefs
+ * @brief BLE logger thread function.
+ *
+ * This thread processes sensor data messages from the queue and either updates
+ * BLE advertisements or logs the data to external flash storage.
+ *
+ * @param unused1 Unused parameter.
+ * @param unused2 Unused parameter.
+ * @param unused3 Unused parameter.
  */
 static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 {
@@ -1216,7 +1334,16 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
-/* Scanner Thread: Periodically scans for AP heartbeat, triggers state changes */
+/**
+ * @brief Scanner thread function.
+ *
+ * This thread periodically scans for BLE advertisements from target APs and
+ * triggers state transitions based on the scan results.
+ *
+ * @param unused1 Unused parameter.
+ * @param unused2 Unused parameter.
+ * @param unused3 Unused parameter.
+ */
 static void scanner_func(void *unused1, void *unused2, void *unused3)
 {
 	ARG_UNUSED(unused1);
@@ -1230,7 +1357,6 @@ static void scanner_func(void *unused1, void *unused2, void *unused3)
 		// Only perform scan logic if not charging
 		if (atomic_get(&current_state) != STATE_CHARGING)
 		{
-			heartbeat_received_this_cycle = false; // Reset flag before scan
 			LOG_DBG("Starting heartbeat scan ...");
 
 			// Start scanning (scan_cb will be called for received packets)
@@ -1270,6 +1396,14 @@ static void scanner_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
+/**
+ * @brief Main entry point of the application.
+ *
+ * This function initializes peripherals, sensors, BLE, and threads, and
+ * enters the main loop.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
 int main(void)
 {
 	int ret;
