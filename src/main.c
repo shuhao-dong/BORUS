@@ -60,9 +60,11 @@ static struct k_timer wdt_feed_timer;
 
 /* -------------------- Encryption -------------------- */
 
-static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL;
-static uint64_t nonce_counter = 0;		  // unique nonce for each BLE message
 #define BORUS_SETTINGS_PATH "borus/state" // save nonce in NVM, allow reboot
+#define NONCE_SAVE_INTERVAL 5 * 60 * 1000 // save nonce every 5 minutes
+
+static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL;
+static uint64_t nonce_counter = 0; // unique nonce for each BLE message
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -307,6 +309,8 @@ static const struct battery_level_point levels[] = {
 
 /* -------------------- LittleFS Mount Configuration -------------------- */
 
+#define LOG_SYNC_THRESHOLD 15000 // Record to log before fs_sync, this tolerates 5-min data missing
+
 FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(storage);
 static struct fs_mount_t lfs_mount_p = {
 	.type = FS_LITTLEFS,
@@ -323,7 +327,7 @@ static struct fs_mount_t lfs_mount_p = {
  */
 static void set_imu_rate(bool high_rate)
 {
-	LOG_INF("Setting IMU rate to %s", high_rate ? "HIGH" : "LOW");
+	LOG_DBG("Setting IMU rate to %s", high_rate ? "HIGH" : "LOW");
 
 	bmi270_acc_config_t *acc_cfg = high_rate ? &bmi270_acc_config_high : &bmi270_acc_config_low;
 	bmi270_gyr_config_t *gyr_cfg = high_rate ? &bmi270_gyr_config_high : &bmi270_gyr_config_low;
@@ -353,7 +357,7 @@ static void start_advertising(void)
 	else
 	{
 		adv_running = true;
-		LOG_INF("Advertising started/updated");
+		LOG_DBG("Advertising started/updated");
 	}
 }
 
@@ -372,7 +376,7 @@ static void stop_advertising(void)
 	if (ret == 0 || ret == -EALREADY)
 	{
 		adv_running = false;
-		LOG_INF("Advertising stopped");
+		LOG_DBG("Advertising stopped");
 	}
 	else
 	{
@@ -500,7 +504,7 @@ static void battery_timeout_work_handler(struct k_work *work)
 static void heartbeat_timeout_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_INF("Workqueue: Heartbeat timeout expired, entering AWAY");
+	LOG_DBG("Workqueue: Heartbeat timeout expired, entering AWAY");
 
 	if (atomic_get(&current_state) == STATE_HOME_ADVERTISING)
 	{
@@ -519,7 +523,7 @@ static void heartbeat_timeout_work_handler(struct k_work *work)
 static void usb_connect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_INF("Workqueue: USB connected, entering CHARGING");
+	LOG_DBG("Workqueue: USB connected, entering CHARGING");
 	k_msleep(500);
 	if (atomic_get(&current_state) != STATE_CHARGING)
 	{
@@ -534,7 +538,7 @@ static void usb_connect_work_handler(struct k_work *work)
 static void usb_disconnect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_INF("Workqueue: USB disconnected, entering HOME");
+	LOG_DBG("Workqueue: USB disconnected, entering HOME");
 
 	if (atomic_get(&current_state) != STATE_HOME_ADVERTISING)
 	{
@@ -549,7 +553,7 @@ static void usb_disconnect_work_handler(struct k_work *work)
 static void scan_found_ap_work_handler(struct k_work *k_work)
 {
 	ARG_UNUSED(k_work);
-	LOG_INF("Workqueue: Scan found AP, entering HOME");
+	LOG_DBG("Workqueue: Scan found AP, entering HOME");
 
 	if (atomic_get(&current_state) != STATE_HOME_ADVERTISING)
 	{
@@ -557,7 +561,7 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 	}
 	else
 	{
-		LOG_INF("Workqueue: In HOME, restart timer");
+		LOG_DBG("Workqueue: In HOME, restart timer");
 		k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT);
 	}
 }
@@ -630,22 +634,19 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 	switch (status)
 	{
 	case USB_DC_CONNECTED:
-		LOG_INF("USB Connected - Entering Charging State");
+		LOG_DBG("USB Connected - Entering Charging State");
 		k_work_submit(&usb_connect_work);
 		break;
 	case USB_DC_DISCONNECTED:
-		LOG_INF("USB Disconnected");
-		// Assume Home initially, scanner will correct if Away
-		LOG_INF("Exiting Charging State - Default to Home");
+		LOG_DBG("USB Disconnected - Entering Home state");
 		k_work_submit(&usb_disconnect_work);
 		break;
 	case USB_DC_CONFIGURED:
-		LOG_INF("USB Configured by Host");
+		LOG_INF("USB Configured by Host, ready for reading");
 		if (atomic_get(&current_state) != STATE_CHARGING)
 		{
 			k_work_submit(&usb_connect_work);
 		}
-		LOG_INF("USB Ready for potential data offload commands");
 		break;
 	default:
 		break;
@@ -689,11 +690,8 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 	offset += 2; // 2 bytes
 
 	/* IMU data */
-	for (int i = 0; i < 6; i++)
-	{
-		sys_put_le16(data->imu_data[i], &buffer[offset]);
-		offset += 2;
-	} // 12 bytes
+	memcpy(&buffer[offset], data->imu_data, sizeof(data->imu_data));
+	offset += sizeof(data->imu_data); // 12 bytes
 
 	/* Timestamp */
 	sys_put_le32(data->timestamp, &buffer[offset]);
@@ -718,7 +716,7 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
 
-	LOG_INF("BMI270 handler thread started");
+	LOG_DBG("BMI270 handler thread started");
 
 	while (1)
 	{
@@ -769,7 +767,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
 
-	LOG_INF("BMP390 hanlder thread started (polling at %d ms interval)", BMP390_READ_INTERVAL);
+	LOG_DBG("BMP390 hanlder thread started (polling at %d ms interval)", BMP390_READ_INTERVAL);
 
 	while (1)
 	{
@@ -802,10 +800,10 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 				LOG_WRN("BMP390 queue full");
 			}
 
-			LOG_DBG("Timestamp: %u, Temperature: %.2f, Pressure: %.1f",
-					msg.payload.env.timestamp,
-					(double)(msg.payload.env.temperature / 100),
-					(double)(msg.payload.env.pressure / 10.0));
+			// LOG_DBG("Timestamp: %u, Temperature: %.2f, Pressure: %.1f",
+			// 		msg.payload.env.timestamp,
+			// 		(double)(msg.payload.env.temperature / 100),
+			// 		(double)(msg.payload.env.pressure / 10.0));
 		}
 		else
 		{
@@ -819,7 +817,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 // This function gets called by settings_load() if the key is found
 static int settings_handle_nonce_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
-	LOG_INF("Settings handler entered for key: %s (len: %d)", name ? name : "NULL", len);
+	LOG_DBG("Settings handler entered for key: %s (len: %d)", name ? name : "NULL", len);
 
 	const char *next;
 	int ret;
@@ -835,7 +833,7 @@ static int settings_handle_nonce_set(const char *name, size_t len, settings_read
 		ret = read_cb(cb_arg, &nonce_counter, sizeof(nonce_counter));
 		if (ret > 0)
 		{
-			LOG_INF("Loaded nonce_counter from NVS: %llu", nonce_counter);
+			LOG_DBG("Loaded nonce_counter from NVS: %llu", nonce_counter);
 			return 0;
 		}
 		LOG_ERR("Failed to read nonce_ctr setting: %d", ret);
@@ -971,7 +969,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
 
-	LOG_INF("BLE Logger thread started");
+	LOG_DBG("BLE Logger thread started");
 
 	int ret;
 	sensor_message_t received_msg;						// Received from message queue
@@ -979,8 +977,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	current_sensor_state.timestamp = k_uptime_get_32(); // Set initial timestamp
 	bool state_needs_update = false;					// Flag to reduce ADV updates
 
-	uint32_t save_timer = k_uptime_get_32();
-	const uint32_t SAVE_INTERVAL_MS = 5 * 60 * 1000; // Log the counter every 5 min
+	uint32_t save_timer = k_uptime_get_32();	// Timer for saving nonce 
 
 	struct fs_file_t log_file;			  // File object for littlefs
 	bool file_is_open = false;			  // Track if log file is currently open
@@ -1043,7 +1040,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 			{
 				if (file_is_open)
 				{
-					LOG_INF("Home mode: Closing log file.");
+					LOG_DBG("Home mode: Closing log file.");
 					ret = fs_sync(&log_file); // Ensure data is flushed
 					if (ret < 0)
 					{
@@ -1078,12 +1075,12 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 					LOG_WRN("Failed to update ADV data: %d", ret);
 				}
 
-				if (k_uptime_get_32() - save_timer > SAVE_INTERVAL_MS)
+				if (k_uptime_get_32() - save_timer > NONCE_SAVE_INTERVAL)
 				{
 					ret = settings_save_one(BORUS_SETTINGS_PATH "/nonce_ctr", (const void *)&nonce_counter, sizeof(nonce_counter));
 					if (ret == 0)
 					{
-						LOG_INF("Saved nonce_counter to NVS: %llu", nonce_counter);
+						LOG_DBG("Saved nonce_counter to NVS: %llu", nonce_counter);
 					}
 					else
 					{
@@ -1105,7 +1102,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 					// Open file if not already open and storage is not full
 					if (!file_is_open && !log_storage_full)
 					{
-						LOG_INF("Away mode: Opening log file %s", LOG_FILE_PATH);
+						LOG_DBG("Away mode: Opening log file %s", LOG_FILE_PATH);
 
 						int ret = fs_open(&log_file, LOG_FILE_PATH, FS_O_APPEND | FS_O_CREATE | FS_O_WRITE);
 
@@ -1117,7 +1114,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 						}
 						else
 						{
-							LOG_INF("Log file opened successfully");
+							LOG_DBG("Log file opened successfully");
 							file_is_open = true;
 							log_write_count = 0; // Reset sync counter on open
 						}
@@ -1141,7 +1138,12 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 						if (written < 0)
 						{
 							LOG_ERR("Failed to write to log file: %d", (int)written);
-							fs_close(&log_file);
+							if (written == -ENOSPC)
+							{
+								LOG_WRN("Log storage full");
+								log_storage_full = true; // Set flag
+							}
+							fs_close(&log_file); // Close on error
 							file_is_open = false;
 						}
 						else if (written < sizeof(log_record))
@@ -1159,7 +1161,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 							LOG_DBG("Logged IMU data (%d bytes), write count: %d",
 									(int)written, log_write_count);
 
-							if (log_write_count >= 1000)
+							if (log_write_count >= LOG_SYNC_THRESHOLD)
 							{
 								ret = fs_sync(&log_file);
 								if (ret < 0)
@@ -1178,11 +1180,12 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 					{
 						// Optional: Log periodically that storage is full
 						static uint32_t last_full_log = 0;
-						if (k_uptime_get_32() - last_full_log > 30000)
+						if (k_uptime_get_32() - last_full_log > NONCE_SAVE_INTERVAL)
 						{
 							LOG_WRN("Storage is full. No longer logging data.");
 							last_full_log = k_uptime_get_32();
 						}
+						continue;
 					}
 				}
 			}
@@ -1191,7 +1194,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				// Close file if open (transitioned from AWAY)
 				if (file_is_open)
 				{
-					LOG_INF("State %d: Closing log file.", active_state);
+					LOG_DBG("State %d: Closing log file.", active_state);
 					ret = fs_sync(&log_file); // Sync before closing
 					if (ret < 0)
 					{
@@ -1220,7 +1223,7 @@ static void scanner_func(void *unused1, void *unused2, void *unused3)
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
 
-	LOG_INF("Scanner thread started");
+	LOG_DBG("Scanner thread started");
 
 	while (1)
 	{
@@ -1228,7 +1231,7 @@ static void scanner_func(void *unused1, void *unused2, void *unused3)
 		if (atomic_get(&current_state) != STATE_CHARGING)
 		{
 			heartbeat_received_this_cycle = false; // Reset flag before scan
-			LOG_INF("Starting heartbeat scan ...");
+			LOG_DBG("Starting heartbeat scan ...");
 
 			// Start scanning (scan_cb will be called for received packets)
 			int ret = bt_le_scan_start(&scan_param, scan_cb);
@@ -1248,7 +1251,7 @@ static void scanner_func(void *unused1, void *unused2, void *unused3)
 				{
 					LOG_ERR("Failed to stop scan: %d", ret);
 				}
-				LOG_INF("Scan window finished");
+				LOG_DBG("Scan window finished");
 				// Check the flag set by scan_cb
 				// If we are AWAY and received a heartbeat, scan_cb already triggered state change
 				// If we are HOME and did NOT receive a heartbeat, the heartbeat_timeout_timer will fire
@@ -1259,7 +1262,7 @@ static void scanner_func(void *unused1, void *unused2, void *unused3)
 		}
 		else
 		{
-			LOG_INF("Skipping scan during CHARGING state");
+			LOG_DBG("Skipping scan during CHARGING state");
 		}
 
 		// Wait for the next scan interval regardless of state (unless very low power needed in charge)
@@ -1422,7 +1425,7 @@ int main(void)
 	}
 	else
 	{
-		LOG_INF("LittleFS mounted on %s", mp->mnt_point);
+		LOG_DBG("LittleFS mounted on %s", mp->mnt_point);
 	}
 	// Log FS stats if mount succeeded
 	if (ret == 0)
@@ -1430,7 +1433,7 @@ int main(void)
 		struct fs_statvfs stats;
 		if (fs_statvfs(mp->mnt_point, &stats) == 0)
 		{
-			LOG_INF("%s: bsize = %lu ; frsize = %lu ;"
+			LOG_DBG("%s: bsize = %lu ; frsize = %lu ;"
 					" blocks = %lu ; bfree = %lu",
 					mp->mnt_point,
 					stats.f_bsize, stats.f_frsize,
@@ -1489,25 +1492,24 @@ int main(void)
 	}
 	else
 	{
-		LOG_INF("Setting subsystem initialised");
+		LOG_DBG("Setting subsystem initialised");
 	}
 
 	ret = settings_load_subtree("borus/state");
 	if (ret == 0)
 	{
-		LOG_INF("Settings loaded successfully");
+		LOG_DBG("Settings loaded successfully");
 	}
 	else if (ret == -ENOENT)
 	{
-		LOG_INF("No 'bours/state' settings found in NVS. Using default = 0");
+		LOG_DBG("No 'bours/state' settings found in NVS. Using default = 0");
 	}
 	else
 	{
 		LOG_ERR("Failed to load settings for 'borus/state': %d", ret);
 	}
-	LOG_INF("Starting with nonce_counter = %llu", nonce_counter);
 
-	LOG_INF("Step 8: Settings loaded");
+	LOG_INF("Step 8: Settings loaded, nonce = %llu", nonce_counter);
 
 	// USB Device Subsystem
 	ret = usb_enable(usb_dc_status_cb); // Register callback
@@ -1598,7 +1600,7 @@ int main(void)
 
 	// --- Initial State ---
 	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
-	LOG_INF("Setting *initial state* determined state to: %d", initial_state);
+	LOG_DBG("Setting *initial state* determined state to: %d", initial_state);
 	enter_state(initial_state);
 
 	LOG_INF("Entering main loop (idle)");
