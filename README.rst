@@ -53,6 +53,6 @@ The above log shows: block size = 4096 as 0x1000, read size = 16 as rd 16, prog 
 After extracting the file, you can use::
 
   cd ..
-  unmount mount
+  umount mount
 
 To unmount the file system.
