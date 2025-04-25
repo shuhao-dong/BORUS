@@ -36,5 +36,8 @@ such an action. It is recommended to use dfu-util command line tool or AuTerm GU
 Build errors
 ************
 
+Read External Flash File
+************************
+
 
 
