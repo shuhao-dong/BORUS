@@ -45,6 +45,8 @@
 #include <psa/crypto_values.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/watchdog.h>
+#include <zephyr/bluetooth/hci_vs.h>
+#include <zephyr/bluetooth/addr.h>
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
@@ -212,10 +214,10 @@ typedef struct
 
 // BLE advertisement parameters
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
-	BT_LE_ADV_OPT_SCANNABLE | BT_LE_ADV_OPT_USE_IDENTITY, // Use identity MAC for advertisement
-	BLE_ADV_INTERVAL_MIN,		// Min advertisement interval (min * 0.625)
-	BLE_ADV_INTERVAL_MAX,		// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
-	NULL						// not directed, pass NULL
+	BT_LE_ADV_OPT_SCANNABLE | BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_NOTIFY_SCAN_REQ, // Use identity MAC for advertisement
+	BLE_ADV_INTERVAL_MIN,																  // Min advertisement interval (min * 0.625)
+	BLE_ADV_INTERVAL_MAX,																  // Max advertisement interval (max * 0.625), add short delay to avoid aliasing
+	NULL																				  // not directed, pass NULL
 );
 
 // Buffer for dynamic manufacturer data in advertisement
@@ -224,11 +226,14 @@ static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN];
 
 // --- Advertising Data (Primary Packet) ---
 struct bt_data ad[] = {
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN)};
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN)
+};
 
 // --- Scan Response Data (Secondary Packet, sent on request) ---
 struct bt_data sd[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))};
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))
+};
 
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
