@@ -54,5 +54,3 @@ After extracting the file, you can use::
 
   cd ..
   umount mount
-
-To unmount the file system.
