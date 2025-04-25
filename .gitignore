@@ -24,4 +24,4 @@ zephyr/zephyr.* # Zephyr kernel binary files
 *.log
 *~
 .DS_Store
-.csv
+*.csv
