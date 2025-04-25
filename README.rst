@@ -50,3 +50,9 @@ Make sure the block size, read size, prog size, cache size and lookahead size is
   [00:00:00.061,065] <inf> littlefs: sizes: rd 16 ; pr 16 ; ca 64 ; la 32
 
 The above log shows: block size = 4096 as 0x1000, read size = 16 as rd 16, prog size=16 as pr 16, cache size = 64 as ca 64, lookahead size = 32 as la 32.
+After extracting the file, you can use::
+
+  cd ..
+  unmount mount
+
+To unmount the file system.
