@@ -1,9 +1,24 @@
 Overview
 ********
 
-This is the prototype code for TORUS using Zephyr RTOS to collect sensor data and 
+This is the project code for TORUS using Zephyr RTOS to collect sensor data and 
 transimit or log data based on the current state of the device. The code is primarily 
-tested on Nordic Thingy53. 
+tested on Nordic Thingy53. Helper tools are included.
+
+.. code-block:: none
+
+    BORUS/
+    ├── src/                 # Sources files for wearable
+    │   ├── driver/          # Driver files
+    │   └── main.c           # Cleaned and preprocessed data
+    ├── notebooks/            # Jupyter notebooks for exploration
+    ├── src/                  # Source code
+    │   ├── __init__.py
+    │   └── utils.py          # Utility functions
+    ├── tests/                # Unit and integration tests
+    ├── README.rst            # Project documentation
+    ├── requirements.txt      # Python dependencies
+    └── setup.py              # Setup script for pip installation
 
 Requirements
 ************
