@@ -11,14 +11,14 @@ Requirements
 You must use nRF Connect SDK and toolchain version v2.6.0 or above in order to better 
 support the partition manager and sysbuild.
 
-For board information, please refer to the datasheet of Thingy53. 
+For board information, please refer to the datasheet of `Thingy53 <https://www.nordicsemi.com/Products/Development-hardware/Nordic-Thingy-53>`_
 
 Building and Running
 ********************
 
 The nRF Connect Extension in VSCode is recommended to build and test the code.
 
-To get started with nRF Connect Extension in VSCode, please refer to the official tutorial.
+To get started with nRF Connect Extension in VSCode, please refer to the official `tutorial <https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-VS-Code/Tutorials>`_
 
 When flash, please remember the Thingy53 is based on nRF5340 dual-core SoC, you need to flash 
 both the application core and the network core to enable functions like BLE.
@@ -32,9 +32,6 @@ current code disabled log output over UART, you will need a JTAG connector to ac
 
 You could also flash the new firmware via USB to perform a DFU. You will need a signed bin file to perform
 such an action. It is recommended to use dfu-util command line tool or AuTerm GUI software. 
-
-Build errors
-************
 
 Read External Flash File
 ************************
