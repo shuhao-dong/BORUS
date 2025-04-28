@@ -48,7 +48,7 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/watchdog.h>
 
-LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
 
 /* -------------------- Watchdog Timer --------------------*/
 
@@ -104,16 +104,14 @@ typedef enum
 	STATE_CHARGING			// USB connected
 } device_state_t;
 
-// Work item for heartbeat timeout -> Away state
-static struct k_work heartbeat_timeout_work;
-// Work item for battery timeout -> Periodic voltage reading
-static struct k_work battery_timeout_work;
-// Work item for USB connect -> CHARGING state
-static struct k_work usb_connect_work;
-// Work item for USB disconnect -> HOME state (or chosen default)
-static struct k_work usb_disconnect_work;
-// Work item for Scan Found AP -> HOME state
-static struct k_work scan_found_ap_work;
+
+static struct k_work heartbeat_timeout_work; // Work item for heartbeat timeout -> Away state
+static struct k_work battery_timeout_work;	// Work item for battery timeout -> Periodic voltage reading
+static struct k_work usb_connect_work;	// Work item for USB connect -> CHARGING state
+static struct k_work usb_disconnect_work;	// Work item for USB disconnect -> HOME state (or chosen default)
+static struct k_work scan_found_ap_work;	// Work item for Scan Found AP -> HOME state
+static struct k_work scan_open_work;
+static struct k_work scan_close_work;
 
 // --- Use atomic type for state changes between threads/ISRs
 static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
@@ -175,6 +173,8 @@ K_SEM_DEFINE(bmi270_isr_sem, 0, 20);
 // Timers for Periodic Tasks
 static struct k_timer heartbeat_timeout_timer; // For away detection
 static struct k_timer battery_timer;		   // For periodic battery reading
+static struct k_timer scan_open_timer;
+static struct k_timer scan_close_timer;
 
 /* -------------------- Configuration Constants -------------------- */
 
@@ -351,6 +351,36 @@ static K_MUTEX_DEFINE(hb_lock);
 static struct k_timer scan_open_timer;
 static struct k_timer scan_close_timer;
 
+static uint64_t next_deadline_ms = 0; /* absolute time (ms)   */
+static bool period_learned = false; 
+
+/**
+ * @brief Get the current time in milliseconds.
+ */
+static inline uint64_t ms_now(void)	  /* shorthand            */
+{
+	return k_uptime_get();
+}
+
+/**
+ * @brief Schedule the scan open timer based on the next deadline.
+ *
+ * This function calculates the time until the next deadline and sets the
+ * scan open timer accordingly. If no period has been learned, it does nothing.
+ */
+static void schedule_open_from_deadline(void)
+{
+    if (!period_learned) {            /* no beacon yet → do nothing   */
+        return;
+	}
+
+    int32_t delta = (int32_t)(next_deadline_ms - EARLY_MARGIN_MS - ms_now());
+    if (delta < 0) {
+        delta = 0;
+    }
+    k_timer_start(&scan_open_timer, K_MSEC(delta), K_NO_WAIT);
+}
+
 /* -------------------- State Management Functions -------------------- */
 
 /**
@@ -426,32 +456,6 @@ static void stop_advertising(void)
 	}
 }
 
-static bool parse_mfr_period(struct bt_data *d, void *user_data)
-{
-	uint16_t *period_ms = user_data;
-
-	if (d->type == BT_DATA_MANUFACTURER_DATA &&
-		d->data_len >= 4 && /* 2 B CID + 2 B time  */
-		sys_get_le16(d->data) == 0x0059)
-	{ /* Nordic CID          */
-
-		uint16_t t_s = sys_get_le16(d->data + 2); /*   Time_L + Time_H   */
-		if (t_s == 0)
-		{				 /* ignore “0 s” keep-alive bursts */
-			return true; /* keep parsing                      */
-		}
-
-		*period_ms = t_s * 1000U; /* hand back to caller */
-		return false;			  /* stop any further AD */
-	}
-	return true; /* keep iterating      */
-}
-
-static struct k_timer scan_open_timer;
-static struct k_timer scan_close_timer;
-static struct k_work scan_open_work;
-static struct k_work scan_close_work;
-
 /**
  * @brief Manage state transitions and associated actions.
  *
@@ -495,7 +499,7 @@ static void enter_state(device_state_t new_state)
 	case STATE_FIND_PERIOD:
 		LOG_INF("Scanning to learn AP period ... ");
 		k_work_submit(&scan_open_work);
-		break; 
+		break;
 	case STATE_HOME_ADVERTISING:
 		LOG_INF("Entering Home Adv Mode");
 		set_imu_rate(true);													   // Set high IMU rate and performance mode
@@ -522,6 +526,37 @@ static void enter_state(device_state_t new_state)
 }
 
 /**
+ * @brief Parse the manufacturer data from the advertisement packet to get time for scan.
+ *
+ * This function checks if the manufacturer data contains a specific CID and
+ * extracts the period in milliseconds from it.
+ *
+ * @param d Pointer to the Bluetooth data structure.
+ * @param user_data Pointer to user data (in this case, a pointer to store the period).
+ *
+ * @return true to continue parsing, false to stop parsing.
+ */
+static bool parse_mfr_period(struct bt_data *d, void *user_data)
+{
+	uint16_t *period_ms = user_data;
+
+	if (d->type == BT_DATA_MANUFACTURER_DATA &&
+		d->data_len >= 4 && 				/* 2 B CID + 2 B time  */
+		sys_get_le16(d->data) == 0x0059)	/* Nordic CID          */
+	{ 
+		uint16_t t_s = sys_get_le16(d->data + 2); 	/*   Time_L + Time_H   */
+		if (t_s == 0)
+		{						 	/* ignore “0 s” keep-alive bursts */
+			return true; 			/* keep parsing                      */
+		}
+
+		*period_ms = t_s * 1000U; 	/* hand back to caller */
+		return false;			  	/* stop any further AD */
+	}
+	return true; 					/* keep iterating      */
+}
+
+/**
  * @brief Callback function for BLE scanning.
  *
  * This function is called when a BLE advertisement is received. It checks if
@@ -534,15 +569,19 @@ static void enter_state(device_state_t new_state)
  * @param buf Pointer to the advertisement data buffer.
  */
 /* ------------------------------------------------------------------ */
-/*  scan_cb – called for every advertisement the Controller delivers  */
-/* ------------------------------------------------------------------ */
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 					struct net_buf_simple *buf)
 {
+	if (atomic_get(&current_state) == STATE_CHARGING)
+	{
+		/* ignore all packets while charging */
+		return;
+	}
+	
 	char addr_str[BT_ADDR_LE_STR_LEN];
 	bt_addr_to_str(&addr->a, addr_str, sizeof(addr_str));
 
-	/* --- 1. Is it one of our Access Points? ------------------------ */
+	/* 1. Match the target address */
 	bool known_ap = false;
 	for (size_t i = 0; i < num_target_aps; i++)
 	{
@@ -554,139 +593,60 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 	}
 	if (!known_ap)
 	{
-		return; /* not our beacon */
-	}
-
-	/* --- 2. Extract the period (seconds) from Manufacturer field --- */
-	uint16_t new_period_ms = 0; /* will be filled by the parser */
-	bt_data_parse(buf, parse_mfr_period, &new_period_ms);
-
-	if (new_period_ms == 0)
-	{ /* either malformed or keep-alive “0” */
 		return;
 	}
 
-	LOG_INF("Heartbeat from %s, period = %u ms, RSSI %d",
+	/* 2. Pull the period out of the Manufacturer field */
+	uint16_t new_period_ms = 0;
+	bt_data_parse(buf, parse_mfr_period, &new_period_ms);
+	if (new_period_ms == 0)
+	{ /* malformed or keep-alive  */
+		return;
+	}
+
+	LOG_DBG("packet @%llu, δ = %lld ms",
+		(unsigned long long)ms_now(),                     /* arrival      */
+		(long long)( (int64_t)ms_now() -
+					 (int64_t)next_deadline_ms) );
+
+	LOG_INF("Heartbeat from %s  period=%u ms  RSSI=%d",
 			addr_str, new_period_ms, rssi);
 
-	/* --- 3. Store period thread-safely and reset miss counter ------ */
+	/* 3. Update shared timing info */
 	k_mutex_lock(&hb_lock, K_FOREVER);
+	period_learned = true; 
 	hb_period_ms = new_period_ms;
 	hb_misses = 0;
+	next_deadline_ms = ms_now() + hb_period_ms;
 	k_mutex_unlock(&hb_lock);
 
-	/* --- 4. Behaviour depends on our current state ----------------- */
+	/* 4. State-dependent handling */
 
-	device_state_t state = atomic_get(&current_state);
+	device_state_t s = atomic_get(&current_state);
 
-	if (state == STATE_FIND_PERIOD)
+	if (s == STATE_FIND_PERIOD)
 	{
-		/* a)  We are still in boot negotiation:                      */
-		/*     – stop the continuous scan                             */
-		bt_le_scan_stop();
+		/* boot-time negotiation finished */
+		bt_le_scan_stop(); /* stop continuous scan */
 		scan_active = false;
 
-		/*     – arm the first timed window (T − early_margin)        */
-		k_timer_start(&scan_open_timer,
-					  K_MSEC(hb_period_ms - EARLY_MARGIN_MS),
-					  K_NO_WAIT);
-
-		/*     – start normal advertising                             */
-		start_advertising();
-
-		/*     – start the 90-s heartbeat watchdog                    */
+		schedule_open_from_deadline(); /* first timed window */
+		start_advertising();		   /* start outgoing ADV */
 		k_timer_start(&heartbeat_timeout_timer,
 					  HEARTBEAT_TIMEOUT, K_NO_WAIT);
-
-		/*     – enter normal HOME state                              */
 		enter_state(STATE_HOME_ADVERTISING);
 		return;
 	}
 
-	/* ---------- Normal operating path (already HOME) --------------- */
+	/* normal HOME operation: reschedule next window */
+	schedule_open_from_deadline();
 
-	/* schedule next window */
-	k_timer_start(&scan_open_timer,
-				  K_MSEC(hb_period_ms - EARLY_MARGIN_MS),
-				  K_NO_WAIT);
-
-	/* close scan immediately; advertising will restart automatically
-	when scan_close_work_handler runs */
+	/* close current scan immediately */
 	bt_le_scan_stop();
 	scan_active = false;
 
-	/* refresh HOME timer / trigger HOME transition if needed */
+	/* refresh watchdog / ensure we stay HOME */
 	k_work_submit(&scan_found_ap_work);
-}
-
-static void scan_open_work_handler(struct k_work *w)
-{
-	/* stop advertising if legacy adv is active */
-	if (adv_running)
-	{
-		bt_le_adv_stop();
-		adv_running = false;
-	}
-
-	int err = bt_le_scan_start(&scan_param, scan_cb);
-	if (err && err != -EALREADY)
-	{
-		LOG_ERR("bt_le_scan_start failed (%d)", err);
-		return;
-	}
-	scan_active = true;
-
-	/* For normal operation (not FIND_PERIOD) arm close timer */
-	if (atomic_get(&current_state) != STATE_FIND_PERIOD)
-	{
-		k_timer_start(&scan_close_timer,
-					  K_MSEC(EARLY_MARGIN_MS + LATE_MARGIN_MS),
-					  K_NO_WAIT);
-	}
-}
-
-static void scan_close_work_handler(struct k_work *w)
-{
-	if (scan_active)
-	{
-		bt_le_scan_stop();
-		scan_active = false;
-	}
-
-	if (++hb_misses >= MISSES_BEFORE_FALLBACK)
-	{
-		LOG_WRN("Missed %u heartbeats → fallback", MISSES_BEFORE_FALLBACK);
-		hb_period_ms = DEFAULT_HB_MS;
-		hb_misses = 0;
-	}
-
-	/* restart advertising if we are in HOME */
-	if (!adv_running &&
-		atomic_get(&current_state) == STATE_HOME_ADVERTISING)
-	{
-		start_advertising();
-	}
-}
-
-static void scan_open_timer_expiry(struct k_timer *t)
-{
-	k_work_submit(&scan_open_work);
-}
-
-static void scan_close_timer_expiry(struct k_timer *t)
-{
-	k_work_submit(&scan_close_work);
-}
-
-static void timed_scan_init(void)
-{
-	/* initialise work items */
-	k_work_init(&scan_open_work, scan_open_work_handler);
-	k_work_init(&scan_close_work, scan_close_work_handler);
-
-	/* initialise timers */
-	k_timer_init(&scan_open_timer, scan_open_timer_expiry, NULL);
-	k_timer_init(&scan_close_timer, scan_close_timer_expiry, NULL);
 }
 
 /**
@@ -718,6 +678,84 @@ static void queue_initial_battery_level(void)
 	{
 		LOG_INF("Step 4.2: Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
 	}
+}
+
+/**
+ * @brief Handle the scan open work item.
+ *
+ * This function is called when the scan open work item is triggered. It starts
+ * the BLE scan and stops advertising if necessary.
+ *
+ * @param w Pointer to the work structure.
+ */
+static void scan_open_work_handler(struct k_work *w)
+{
+    /* Stop legacy ADV while scanning */
+    if (adv_running) {
+        bt_le_adv_stop();
+        adv_running = false;
+    }
+
+    int err = bt_le_scan_start(&scan_param, scan_cb);
+    if (err && err != -EALREADY) {
+        LOG_ERR("bt_le_scan_start failed (%d)", err);
+        return;
+    }
+    scan_active = true;
+
+	LOG_DBG("open @%llu  close @%llu  (deadline %llu)",
+		(unsigned long long)(next_deadline_ms - EARLY_MARGIN_MS),
+		(unsigned long long)(next_deadline_ms + LATE_MARGIN_MS),
+		(unsigned long long) next_deadline_ms);
+
+    /* --------------------------------------------------------------
+     *  BEFORE we know the period (i.e. in STATE_FIND_PERIOD)
+     *  we want one *continuous* scan – no close timer.
+     * -------------------------------------------------------------- */
+    if (atomic_get(&current_state) == STATE_FIND_PERIOD) {
+        return;                     /* keep listening indefinitely   */
+    }
+
+    /* Normal operation → close after EARLY+LATE ms */
+    k_timer_start(&scan_close_timer,
+                  K_MSEC(EARLY_MARGIN_MS + LATE_MARGIN_MS),
+                  K_NO_WAIT);
+}
+
+/**
+ * @brief Handle the scan close work item.
+ *
+ * This function is called when the scan close work item is triggered. It stops
+ * the BLE scan and restarts advertising if necessary.
+ *
+ * @param w Pointer to the work structure.
+ */
+static void scan_close_work_handler(struct k_work *w)
+{
+    if (scan_active) {
+        bt_le_scan_stop();
+        scan_active = false;
+    }
+
+    /* Count misses / enter fallback **only after first heartbeat** */
+    if (period_learned) {
+        if (++hb_misses >= MISSES_BEFORE_FALLBACK) {
+            LOG_WRN("Missed %u heartbeats → fallback to 60 s",
+                    MISSES_BEFORE_FALLBACK);
+            hb_period_ms     = DEFAULT_HB_MS;
+            hb_misses        = 0;
+            next_deadline_ms = ms_now() + hb_period_ms;
+        }
+    }
+
+    /* Restart advertising if we are HOME */
+    if (!adv_running &&
+        atomic_get(&current_state) == STATE_HOME_ADVERTISING) {
+        start_advertising();
+    }
+
+    /* Schedule the *next* window; will no-op until period_learned */
+    schedule_open_from_deadline();
 }
 
 /**
@@ -824,6 +862,13 @@ static void usb_disconnect_work_handler(struct k_work *work)
 static void scan_found_ap_work_handler(struct k_work *k_work)
 {
 	ARG_UNUSED(k_work);
+
+	if (atomic_get(&current_state) == STATE_CHARGING)
+	{
+		LOG_DBG("Workqueue: Scan found AP, but in CHARGING state");
+		return;
+	}
+	
 	LOG_DBG("Workqueue: Scan found AP, entering HOME");
 
 	if (atomic_get(&current_state) != STATE_HOME_ADVERTISING)
@@ -835,6 +880,69 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 		LOG_DBG("Workqueue: In HOME, restart timer");
 		k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT);
 	}
+}
+
+/**
+ * @brief Handle the scan open timer expiry event.
+ *
+ * This function is called when the scan open timer expires. It checks if the
+ * period has been learned and schedules the scan open work accordingly.
+ *
+ * @param t Pointer to the timer structure.
+ */
+static void scan_open_timer_expiry(struct k_timer *t)
+{	
+	if (!period_learned) {            /* still in continuous scan     */
+        return;                       /* wait for first heartbeat     */
+    }
+
+	int32_t late = (int32_t)(ms_now() - (next_deadline_ms - EARLY_MARGIN_MS));
+
+    if (late > LATE_MARGIN_MS) {
+        /* Window would open too late → count as miss, try next time */
+        if (++hb_misses >= MISSES_BEFORE_FALLBACK) {
+            LOG_WRN("Missed %u heartbeats → fallback to default period",
+                    MISSES_BEFORE_FALLBACK);
+            hb_period_ms     = DEFAULT_HB_MS;
+            hb_misses        = 0;
+            next_deadline_ms = ms_now() + hb_period_ms;
+        }
+        schedule_open_from_deadline();
+        return;
+    }
+
+    /* OK, still in band → proceed with real radio scan */
+    k_work_submit(&scan_open_work);
+}
+
+/**
+ * @brief Handle the scan close timer expiry event.
+ *
+ * This function is called when the scan close timer expires. It submits the
+ * scan close work to the workqueue.
+ *
+ * @param t Pointer to the timer structure.
+ */
+static void scan_close_timer_expiry(struct k_timer *t)
+{
+	k_work_submit(&scan_close_work);
+}
+
+/**
+ * @brief Initialize the timed scan functionality.
+ *
+ * This function initializes the work items and timers used for timed scanning
+ * and state transitions.
+ */
+static void timed_scan_init(void)
+{
+	/* initialise work items */
+	k_work_init(&scan_open_work, scan_open_work_handler);
+	k_work_init(&scan_close_work, scan_close_work_handler);
+
+	/* initialise timers */
+	k_timer_init(&scan_open_timer, scan_open_timer_expiry, NULL);
+	k_timer_init(&scan_close_timer, scan_close_timer_expiry, NULL);
 }
 
 /**
