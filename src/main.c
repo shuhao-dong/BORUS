@@ -25,6 +25,9 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gap.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
 #include "driver/bmi270.h"
 #include <math.h>
 #include "driver/battery.h"
@@ -208,17 +211,6 @@ typedef struct
 	uint8_t battery;
 } ble_packet_t;
 
-#define DEVICE_NAME CONFIG_BT_DEVICE_NAME		  // Device name for BLE
-#define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1) // Length of the device name
-
-// BLE advertisement parameters
-static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
-	BT_LE_ADV_OPT_SCANNABLE | BT_LE_ADV_OPT_USE_IDENTITY | BT_LE_ADV_OPT_NOTIFY_SCAN_REQ, // Use identity MAC for advertisement
-	BLE_ADV_INTERVAL_MIN,																  // Min advertisement interval (min * 0.625)
-	BLE_ADV_INTERVAL_MAX,																  // Max advertisement interval (max * 0.625), add short delay to avoid aliasing
-	NULL																				  // not directed, pass NULL
-);
-
 // Buffer for dynamic manufacturer data in advertisement
 static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
 static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN];
@@ -227,19 +219,38 @@ static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN];
 #define DEVICE_NAME 		CONFIG_BT_DEVICE_NAME		// Use the name defined in Kconfig
 #define DEVICE_NAME_LEN 	(sizeof(DEVICE_NAME) - 1)
 
-struct bt_data ad[] = {
+/**
+ * If enable BT_LE_ADV_OPT_SCANNABLE, then pass sd as scan response data
+ * 	- Benifit: Scanner will see the name and flag of adv event, we are scannable undirected adv
+ * 	- Lose: Double radio on time so consume more power 
+ * 
+ * If not enable BT_LE_ADV_OPT_SCANNABLE, then pass null to scan response data
+ * 	- Save power as no scan response data is provided, we are non-connectable undirected adv
+ * 	- Lose device name and data flag
+ */
+
+// BLE advertisement parameters
+static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
+	BT_LE_ADV_OPT_USE_IDENTITY, // Use identity MAC for advertisement
+	BLE_ADV_INTERVAL_MIN,																  // Min advertisement interval (min * 0.625)
+	BLE_ADV_INTERVAL_MAX,																  // Max advertisement interval (max * 0.625), add short delay to avoid aliasing
+	NULL																				  // not directed, pass NULL
+);
+
+// Scan response data (hold device name and flag)
+struct bt_data sd[] = {
 	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
 	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN)
 };
 
-// Scan response data (hold sensor data)
-struct bt_data sd[] = {
+// Main adv packet (hold sensor data)
+struct bt_data ad[] = {
 	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))
 };
 
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
-	.type = BT_LE_SCAN_PASSIVE,
+	.type = BT_HCI_LE_SCAN_PASSIVE,
 	.options = BT_LE_SCAN_OPT_FILTER_DUPLICATE,
 	.interval = BT_GAP_SCAN_FAST_INTERVAL,
 	.window = BT_GAP_SCAN_FAST_WINDOW,
@@ -366,7 +377,7 @@ static void start_advertising(void)
 		return;
 	}
 
-	ret = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+	ret = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), NULL, 0);
 
 	if (ret && ret != -EALREADY)
 	{
@@ -1192,7 +1203,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 
 				// Update the advertising data (non-blocking)
-				ret = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
+				ret = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
 				if (ret && ret != -EALREADY)
 				{
 					LOG_WRN("Failed to update ADV data: %d", ret);
