@@ -237,12 +237,6 @@ static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 	NULL																				  // not directed, pass NULL
 );
 
-// Scan response data (hold device name and flag)
-struct bt_data sd[] = {
-	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN)
-};
-
 // Main adv packet (hold sensor data)
 struct bt_data ad[] = {
 	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))
@@ -440,42 +434,44 @@ static void enter_state(device_state_t new_state)
 	// Actions on EXITING the old state
 	switch (old_state)
 	{
-	case STATE_HOME_ADVERTISING:
-		k_timer_stop(&heartbeat_timeout_timer); // stops checking for loss of AP
-		break;
-	case STATE_AWAY_LOGGING:
-		break;
-	case STATE_CHARGING:
-		// Actions for stopping charging are handled by USB disconnect callback
-		break;
-	default: // STATE_INIT or others
-		break;
+		case STATE_HOME_ADVERTISING:
+			k_timer_stop(&heartbeat_timeout_timer); // stops checking for loss of AP
+			break;
+		case STATE_AWAY_LOGGING:
+			break;
+		case STATE_CHARGING:
+			// Actions for stopping charging are handled by USB disconnect callback
+			break;
+		default: // STATE_INIT or others
+			break;
 	}
 
 	// Actions on ENTERING the new state
 	switch (new_state)
 	{
-	case STATE_HOME_ADVERTISING:
-		LOG_INF("Entering Home Adv Mode");
-		set_imu_rate(true);													   // Set high IMU rate and performance mode
-		start_advertising();												   // Start BLE advertisement
-		k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT); // Start timer to track in-home
-		break;
-	case STATE_AWAY_LOGGING:
-		LOG_INF("Entering Away Log Mode");
-		set_imu_rate(false); // Set low IMU rate and low-power mode
-		stop_advertising();	 // Stop advertising
-		// Heartbeat timer should be stopped already from leaving HOME
-		break;
-	case STATE_CHARGING:
-		// Ensure other activities are stopped
-		LOG_INF("Entering Charging Mode");
-		stop_advertising();
-		k_timer_stop(&heartbeat_timeout_timer);
-		break;
-	case STATE_INIT:
-		stop_advertising();
-		break;
+		case STATE_HOME_ADVERTISING:
+			LOG_INF("Entering Home Adv Mode");
+			set_imu_rate(true);													   // Set high IMU rate and performance mode
+			start_advertising();												   // Start BLE advertisement
+			k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT); // Start timer to track in-home
+			break;
+		case STATE_AWAY_LOGGING:
+			LOG_INF("Entering Away Log Mode");
+			set_imu_rate(false); // Set low IMU rate and low-power mode
+			stop_advertising();	 // Stop advertising
+			// Heartbeat timer should be stopped already from leaving HOME
+			break;
+		case STATE_CHARGING:
+			// Ensure other activities are stopped
+			LOG_INF("Entering Charging Mode");
+			stop_advertising();
+			k_timer_stop(&heartbeat_timeout_timer);
+			break;
+		case STATE_INIT:
+			stop_advertising();
+			break;
+		default:
+			break;
 	}
 }
 
