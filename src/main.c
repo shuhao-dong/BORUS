@@ -245,7 +245,7 @@ struct bt_data ad[] = {
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
 	.type = BT_HCI_LE_SCAN_PASSIVE,
-	.options = BT_LE_SCAN_OPT_FILTER_DUPLICATE,
+	.options = BT_LE_SCAN_OPT_FILTER_DUPLICATE | BT_LE_SCAN_OPT_FILTER_ACCEPT_LIST,
 	.interval = BT_GAP_SCAN_FAST_INTERVAL,
 	.window = BT_GAP_SCAN_FAST_WINDOW,
 };
@@ -407,6 +407,47 @@ static void stop_advertising(void)
 	{
 		LOG_ERR("Failed to stop advertisement: %d", ret);
 	}
+}
+
+/**
+ * @brief Populates the BLE filter accept list with target AP addresses.
+ *
+ * Clears the existing list and adds addresses from the global target_ap_addrs array.
+ * Assumes target APs use public addresses.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+static int setup_scan_filter(void)
+{
+	int err;
+	bt_addr_le_t addr_le;
+
+	// Clear any previous filter entries (important if list could change)
+	bt_le_filter_accept_list_clear();
+
+	LOG_INF("Populating BLE scan filter accept list:");
+	for (size_t i = 0; i < num_target_aps; i++) {
+		// Convert string address to bt_addr_le_t.
+		// We assume the target APs use public addresses ("public").
+		// If they use Random Static, use "random" or the correct type string.
+		err = bt_addr_le_from_str(target_ap_addrs[i], "public", &addr_le);
+		if (err) {
+			LOG_ERR("Invalid address string '%s': %d", target_ap_addrs[i], err);
+			// Decide how to handle: return error, skip, etc.
+			return err;
+		}
+
+		// Add the parsed address to the controller's filter accept list
+		err = bt_le_filter_accept_list_add(&addr_le);
+		if (err && err != -EALREADY) { // Ignore if already added
+			LOG_ERR("Failed to add '%s' to accept list: %d", target_ap_addrs[i], err);
+			// Decide how to handle: return error, skip, etc.
+			// If one fails, the list might be partially populated.
+		} else if (err == 0) {
+			LOG_INF("Added %s to filter accept list.", target_ap_addrs[i]);
+		}
+	}
+	return 0; // Success
 }
 
 /**
@@ -695,23 +736,16 @@ static void watchdog_feed(struct k_timer *timer_id)
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type, struct net_buf_simple *buf)
 {
 	char addr_str[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
 
-	/* Convert the address to a string -- We only want the address part, not the type part */
-	bt_addr_to_str(&addr->a, addr_str, sizeof(addr_str));
+	// Filter accept list ensures this callback only runs for target APs.
+	// No manual strcmp needed anymore.
+	LOG_INF("Heartbeat received from filtered AP (%s), RSSI: %d", addr_str, rssi);
 
-	for (size_t i = 0; i < num_target_aps; i++)
-	{
-		if (strcmp(addr_str, target_ap_addrs[i]) == 0)
-		{
-			LOG_INF("Heartbeat received from AP (%s), RSSI: %d", addr_str, rssi);
+	// Submit to work item for state transition
+	k_work_submit(&scan_found_ap_work);
 
-			// Submit to work item for state transition
-			k_work_submit(&scan_found_ap_work);
-
-			LOG_HEXDUMP_DBG(buf->data, buf->len, "Adv Data: ");
-			break;
-		}
-	}
+	LOG_HEXDUMP_DBG(buf->data, buf->len, "Adv Data: ");
 }
 
 /**
@@ -1599,6 +1633,13 @@ int main(void)
 	}
 
 	LOG_INF("Step 6: Bluetooth enabled");
+
+	ret = setup_scan_filter();
+	if (ret) {
+		LOG_ERR("Failed to configure scan filter accept list: %d", ret);
+		return -1;
+	}
+	LOG_INF("Step 6.1: Scan filter accept list configured");
 
 	ret = psa_crypto_init();
 	if (ret != PSA_SUCCESS)
