@@ -25,9 +25,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gap.h>
-#include <zephyr/bluetooth/uuid.h>
-#include <zephyr/bluetooth/conn.h>
-#include <zephyr/bluetooth/gatt.h>
 #include "driver/bmi270.h"
 #include <math.h>
 #include "driver/battery.h"
@@ -47,8 +44,6 @@
 #include <psa/crypto_values.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/watchdog.h>
-#include <zephyr/bluetooth/hci_vs.h>
-#include <zephyr/bluetooth/addr.h>
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
 
@@ -244,7 +239,7 @@ struct bt_data sd[] = {
 
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
-	.type = BT_HCI_LE_SCAN_PASSIVE,
+	.type = BT_LE_SCAN_PASSIVE,
 	.options = BT_LE_SCAN_OPT_FILTER_DUPLICATE,
 	.interval = BT_GAP_SCAN_FAST_INTERVAL,
 	.window = BT_GAP_SCAN_FAST_WINDOW,
