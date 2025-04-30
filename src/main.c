@@ -485,9 +485,23 @@ static void enter_state(device_state_t new_state)
 		k_timer_stop(&heartbeat_timeout_timer); // stops checking for loss of AP
 		break;
 	case STATE_AWAY_LOGGING:
+		k_timer_stop(&scan_open_timer);
+		k_timer_stop(&scan_close_timer);
+		if (scan_active)
+		{
+			bt_le_scan_stop();
+			scan_active = false;
+		}
 		break;
 	case STATE_CHARGING:
 		// Actions for stopping charging are handled by USB disconnect callback
+		break;
+	case STATE_FIND_PERIOD:
+		if (scan_active)
+		{
+			bt_le_scan_stop();
+			scan_active = false;
+		}
 		break;
 	default: // STATE_INIT or others
 		break;
@@ -498,6 +512,16 @@ static void enter_state(device_state_t new_state)
 	{
 	case STATE_FIND_PERIOD:
 		LOG_INF("Scanning to learn AP period ... ");
+		stop_advertising();
+		k_mutex_lock(&hb_lock, K_FOREVER);
+		period_learned = false;
+		next_deadline_ms = 0;
+		hb_period_ms = DEFAULT_HB_MS;
+		hb_misses = 0;
+		k_mutex_unlock(&hb_lock);
+
+		k_timer_stop(&scan_open_timer);
+		k_timer_stop(&scan_close_timer);
 		k_work_submit(&scan_open_work);
 		break;
 	case STATE_HOME_ADVERTISING:
@@ -518,9 +542,25 @@ static void enter_state(device_state_t new_state)
 		LOG_INF("Entering Charging Mode");
 		stop_advertising();
 		k_timer_stop(&heartbeat_timeout_timer);
+		if (scan_active)
+		{
+			LOG_DBG("Stopped active scan on entering CHARGING state");
+			bt_le_scan_stop();
+			scan_active = false;
+		}
+		k_timer_stop(&scan_open_timer);
+		k_timer_stop(&scan_close_timer); 
 		break;
 	case STATE_INIT:
 		stop_advertising();
+		if (scan_active)
+		{
+			bt_le_scan_stop();
+             scan_active = false;
+		}
+		k_timer_stop(&scan_open_timer);
+        k_timer_stop(&scan_close_timer);
+        k_timer_stop(&heartbeat_timeout_timer);
 		break;
 	}
 }
@@ -845,9 +885,33 @@ static void usb_disconnect_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 	LOG_DBG("Workqueue: USB disconnected, entering HOME");
 
-	if (atomic_get(&current_state) != STATE_HOME_ADVERTISING)
+	if (atomic_get(&current_state) == STATE_CHARGING)
 	{
-		enter_state(STATE_HOME_ADVERTISING);
+		k_mutex_lock(&hb_lock, K_FOREVER);
+		period_learned = false;
+		next_deadline_ms = 0;
+		hb_period_ms = DEFAULT_HB_MS;
+		hb_misses = 0;
+		k_mutex_unlock(&hb_lock);
+
+		k_timer_stop(&scan_open_timer);
+		k_timer_stop(&scan_close_timer);
+
+		enter_state(STATE_FIND_PERIOD); 
+	}
+	else
+	{
+		LOG_WRN("USB disconnect event when not in CHARGING state (%d). Entering FIND_PERIOD anyway.", (int)atomic_get(&current_state));
+        // Reset timing info as above
+        k_mutex_lock(&hb_lock, K_FOREVER);
+        period_learned = false;
+        next_deadline_ms = 0;
+        hb_period_ms = DEFAULT_HB_MS;
+        hb_misses = 0;
+        k_mutex_unlock(&hb_lock);
+        k_timer_stop(&scan_open_timer);
+        k_timer_stop(&scan_close_timer);
+        enter_state(STATE_FIND_PERIOD);
 	}
 }
 
