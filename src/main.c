@@ -181,7 +181,7 @@ static struct k_timer scan_close_timer;
 
 #define BMP390_READ_INTERVAL 1000								  // Read environment at 1 Hz
 #define BATTERY_READ_INTERVAL K_MINUTES(15)						  // Every 15 minute read one battery voltage
-#define HEARTBEAT_TIMEOUT K_SECONDS(90)							  // If no heartbeat for 90s, assume away
+#define HEARTBEAT_TIMEOUT K_MINUTES(5)							  // If no heartbeat for 90s, assume away
 #define BLE_ADV_INTERVAL_MIN 32									  // BLE advertise interval 32*0.625 ms
 #define BLE_ADV_INTERVAL_MAX 33									  // BLE advertise interval
 #define SENSOR_DATA_PACKET_SIZE 20								  // Size of the sensor data
@@ -965,17 +965,27 @@ static void scan_close_work_handler(struct k_work *w)
 		// Count misses / enter fallback ONLY if period was learned
 		if (period_learned)
 		{
+			bool go_away = false;
+
 			k_mutex_lock(&hb_lock, K_FOREVER); // Protect shared variables
+
+			next_deadline_ms += hb_period_ms; // Definitely missed this burst, roll deadline forward
+
 			if (++hb_misses >= MISSES_BEFORE_FALLBACK)
 			{
 				LOG_WRN("Missed %u heartbeats → fallback to default period %u ms",
 						MISSES_BEFORE_FALLBACK, DEFAULT_HB_MS);
-				hb_period_ms = DEFAULT_HB_MS;
+				go_away = true; 
 				hb_misses = 0;								// Reset misses after fallback
-				next_deadline_ms = ms_now() + hb_period_ms; // Recalculate deadline
 			}
 			// If misses < threshold, next_deadline_ms is not changed here
 			k_mutex_unlock(&hb_lock);
+
+			if (go_away) {
+				LOG_WRN("Missed %u consecutive heartbeats - entering AWAY", MISSES_BEFORE_FALLBACK);
+				enter_state(STATE_AWAY_LOGGING);
+				return; 
+			}
 		}
 		// Restart sensor advertising
 		if (!atomic_get(&adv_running_flag))
