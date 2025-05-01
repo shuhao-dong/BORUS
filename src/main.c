@@ -366,6 +366,11 @@ static K_MUTEX_DEFINE(hb_lock);
 static uint64_t next_deadline_ms = 0; /* absolute time (ms)   */
 static bool period_learned = false;
 
+#define AWAY_INTERVAL_MIN_MS	(60 * 1000)
+#define AWAY_INTERVAL_MAX_MS	(5 * 60 * 1000)
+
+static uint32_t away_interval_ms = AWAY_INTERVAL_MIN_MS; 
+
 /**
  * @brief Get the current time in milliseconds.
  */
@@ -681,6 +686,7 @@ static void enter_state(device_state_t new_state)
 
 		set_imu_rate(false); // Set low IMU rate and low-power mode
 		stop_advertising();	 // Stop advertising
+		away_interval_ms = AWAY_INTERVAL_MIN_MS; 
 		k_timer_start(&away_adv_timer, AWAY_ADV_INTERVAL, AWAY_ADV_INTERVAL);
 		break;
 
@@ -1078,8 +1084,9 @@ static void scan_close_work_handler(struct k_work *w)
 	else if (state == STATE_AWAY_LOGGING)
 	{
 		LOG_DBG("Scan Close Work: In AWAY state (targeted scan failed).");
-		// Scan triggered by away_scan_trigger_work failed.
-		// DO NOT count misses, DO NOT fallback, DO NOT reschedule scan here.
+		away_interval_ms = MIN(away_interval_ms + 60000, AWAY_INTERVAL_MAX_MS);
+		LOG_DBG("Back-off: next away announcement is %u ms", away_interval_ms);
+		k_timer_start(&away_adv_timer, K_MSEC(away_interval_ms), K_NO_WAIT);
 		// The next attempt will be initiated by away_adv_timer.
 		// Ensure advertising is stopped (should be already).
 		if (atomic_get(&adv_running_flag))
@@ -1251,10 +1258,11 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 static void away_adv_timer_expiry(struct k_timer *timer_id)
 {
 	ARG_UNUSED(timer_id);
-	if (atomic_get(&current_state) == STATE_AWAY_LOGGING)
+	if (atomic_get(&current_state) != STATE_AWAY_LOGGING)
 	{
-		k_work_submit(&away_adv_work);
+		return; 
 	}
+	k_work_submit(&away_adv_work);
 }
 
 /**
@@ -1397,7 +1405,7 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 		k_work_submit(&usb_connect_work);
 		break;
 	case USB_DC_DISCONNECTED:
-		LOG_DBG("USB Disconnected - Entering Home state");
+		LOG_DBG("USB Disconnected");
 		k_work_submit(&usb_disconnect_work);
 		break;
 	case USB_DC_CONFIGURED:
