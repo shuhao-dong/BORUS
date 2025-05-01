@@ -245,7 +245,7 @@ struct bt_data ad[] = {
 	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))
 };
 
-#define AWAY_MANUF_DATA_LEN	5
+#define AWAY_MANUF_DATA_LEN	3
 static uint8_t manuf_data_away[AWAY_MANUF_DATA_LEN];
 
 // Type 0x01: Back home anouncement (hold next scan time)
@@ -872,11 +872,9 @@ static void away_adv_work_handler(struct k_work *work)
 	uint16_t time_to_announce_s = X_ANNOUNCED_S;
 	LOG_DBG("Preparing Type 0x01 ADV. Announcing scan reference time: %u seconds", time_to_announce_s);
 
-	// Prepare payload: [ Company ID LSB | MSB | Type | Time LSB | MSB ]
-	manuf_data_away[0] = 0x59; // Nordic CID LSB
-	manuf_data_away[1] = 0x00; // Nordic CID MSB
-	manuf_data_away[2] = AWAY_ADV_PAYLOAD_TYPE;
-	sys_put_le16(time_to_announce_s, &manuf_data_away[3]);
+	// Prepare payload: [ Type | Time LSB | MSB ]
+	manuf_data_away[0] = AWAY_ADV_PAYLOAD_TYPE; 
+	sys_put_le16(time_to_announce_s, &manuf_data_away[1]);
 
 	start_away_adv_burst();
 
@@ -1564,7 +1562,9 @@ SETTINGS_STATIC_HANDLER_DEFINE(
  * @return 0 on success, negative error code on failure.
  */
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
-{
+{	
+	memset(out, 0, ENC_ADV_PAYLOAD_LEN); 
+
 	if (g_aes_key_id == PSA_KEY_ID_NULL)
 	{
 		LOG_ERR("AES key handle is not valid");
@@ -1628,18 +1628,22 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	ciphertext_len += olen;
 
 	// Finish the operation (usually produces no more output for CTR)
-	st = psa_cipher_finish(&op,
-						   out + NONCE_LEN + ciphertext_len,		 // Where to write if any
-						   SENSOR_DATA_PACKET_SIZE - ciphertext_len, // Remaining capacity
-						   &olen);
-	if (st != PSA_SUCCESS)
+	if (ciphertext_len < SENSOR_DATA_PACKET_SIZE)
 	{
-		LOG_ERR("Failed to finish cipher op: %d", st);
-		ret = -EFAULT;
-		goto cleanup_op;
-	}
-	ciphertext_len += olen;
+		st = psa_cipher_finish(&op,
+			out + 1 + NONCE_LEN + ciphertext_len,	// Where to write if any
+			SENSOR_DATA_PACKET_SIZE - ciphertext_len, // Remaining capacity
+			&olen);
 
+		if (st != PSA_SUCCESS)
+		{
+			LOG_ERR("Failed to finish cipher op: %d", st);
+			ret = -EFAULT;
+			goto cleanup_op;
+		}
+
+		ciphertext_len += olen;
+	}
 	// Now 'out' contains [ 1 byte type | 8-byte nonce | 20-byte ciphertext ]
 
 	// --- Verification ---
