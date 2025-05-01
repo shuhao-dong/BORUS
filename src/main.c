@@ -349,8 +349,8 @@ static struct fs_mount_t lfs_mount_p = {
 /* -------------------- Home Detection -------------------- */
 
 #define DEFAULT_HB_MS 60000	 // Default heartbeat check: controls how often we start a scan operation
-#define EARLY_MARGIN_MS 2000 // [T - early_margin, T + late_margin] as guard time
-#define LATE_MARGIN_MS 2000	// So we have a 4s scanning window 
+#define EARLY_MARGIN_MS 1000 // [T - early_margin, T + late_margin] as guard time
+#define LATE_MARGIN_MS 1000	// So we have a 4s scanning window 
 #define MISSES_BEFORE_FALLBACK 3 // If we miss 3 heartbeat check, we fall back to default scan interval and enter away state
 #define AWAY_SCAN_WINDOW_MS (EARLY_MARGIN_MS + LATE_MARGIN_MS)
 
@@ -745,13 +745,13 @@ static bool parse_mfr_period(struct bt_data *d, void *user_data)
 		d->data_len >= 4 &&				 /* 2 B CID + 2 B time  */
 		sys_get_le16(d->data) == 0x0059) /* Nordic CID          */
 	{
-		uint16_t t_s = sys_get_le16(d->data + 2); /*   Time_L + Time_H   */
-		if (t_s == 0)
+		uint16_t t_cs = sys_get_le16(d->data + 2); /*   Time_L + Time_H   */
+		if (t_cs == 0)
 		{				 /* ignore “0 s” keep-alive bursts */
 			return true; /* keep parsing                      */
 		}
 
-		*period_ms = t_s * 1000U; /* hand back to caller */
+		*period_ms = t_cs * 10U; /* hand back to caller */
 		return false;			  /* stop any further AD */
 	}
 	return true; /* keep iterating      */
