@@ -256,7 +256,7 @@ struct bt_data ad_away[] = {
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
 	.type = BT_HCI_LE_SCAN_PASSIVE,
-	.options = BT_LE_SCAN_OPT_FILTER_DUPLICATE,
+	.options = BT_LE_SCAN_OPT_FILTER_DUPLICATE | BT_LE_SCAN_OPT_FILTER_ACCEPT_LIST,
 	.interval = BT_GAP_SCAN_FAST_INTERVAL,
 	.window = BT_GAP_SCAN_FAST_WINDOW,
 };
@@ -423,6 +423,45 @@ static void set_imu_rate(bool high_rate)
 
 	bmi270_conf_acc(&bmi270_ctx, acc_cfg);
 	bmi270_conf_gyr(&bmi270_ctx, gyr_cfg);
+}
+
+static int setup_scan_filter(void)
+{
+	int ret;
+	bt_addr_le_t addr_le;
+
+	// Clearn any previous filter entries
+	bt_le_filter_accept_list_clear();
+
+	LOG_DBG("Populating BLE scan filter accept list:");
+	for (size_t i = 0; i < num_target_aps; i++)
+	{
+		// Convert string address to bt_addr_le_t.
+		// We assume the target APs use public addresses ("public").
+		// If they use Random Static, use "random" or the correct type string.
+		ret = bt_addr_le_from_str(target_ap_addrs[i], "public", &addr_le);
+		if (ret)
+		{
+			LOG_ERR("Invalid address string '%s': %d", target_ap_addrs[i], ret);
+			// Decide how to handle: return error, skip, etc.
+			return ret;
+		}
+
+		// Add the parsed address to the controller's filter accept list
+		ret = bt_le_filter_accept_list_add(&addr_le);
+		if (ret && ret != -EALREADY)
+		{ 	
+			// Ignore if already added
+			LOG_ERR("Failed to add '%s' to accept list: %d", target_ap_addrs[i], ret);
+			// Decide how to handle: return error, skip, etc.
+			// If one fails, the list might be partially populated.
+		}
+		else if (ret == 0)
+		{
+			LOG_INF("Added %s to filter accept list.", target_ap_addrs[i]);
+		}
+	}
+	return 0;
 }
 
 /**
@@ -716,24 +755,9 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 		/* ignore all packets while charging */
 		return;
 	}
-	
-	char addr_str[BT_ADDR_LE_STR_LEN];
-	bt_addr_to_str(&addr->a, addr_str, sizeof(addr_str));
 
-	/* 1. Match the target address */
-	bool known_ap = false;
-	for (size_t i = 0; i < num_target_aps; i++)
-	{
-		if (strcmp(addr_str, target_ap_addrs[i]) == 0)
-		{
-			known_ap = true;
-			break;
-		}
-	}
-	if (!known_ap)
-	{
-		return;
-	}
+	char addr_str[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
 
 	/* 2. Pull the period out of the Manufacturer field */
 	uint16_t new_period_ms = 0;
@@ -748,8 +772,7 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 		(long long)( (int64_t)ms_now() -
 					 (int64_t)next_deadline_ms) );
 
-	LOG_INF("Heartbeat from %s  period=%u ms  RSSI=%d",
-			addr_str, new_period_ms, rssi);
+	LOG_INF("Heartbeat from %s  period=%u ms  RSSI=%d", addr_str, new_period_ms, rssi);
 
 	/* 3. Update shared timing info */
 	k_mutex_lock(&hb_lock, K_FOREVER);
@@ -2142,6 +2165,13 @@ int main(void)
 	}
 
 	LOG_INF("Step 6: Bluetooth enabled");
+
+	ret = setup_scan_filter();
+	if (ret)
+	{
+		LOG_ERR("Failed to configure scan filter accept list: %d", ret);
+		return -1;
+	}
 
 	ret = psa_crypto_init();
 	if (ret != PSA_SUCCESS)
