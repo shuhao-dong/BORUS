@@ -975,6 +975,7 @@ static void scan_close_work_handler(struct k_work *w)
 			{
 				LOG_WRN("Missed %u heartbeats → fallback to default period %u ms",
 						MISSES_BEFORE_FALLBACK, DEFAULT_HB_MS);
+				hb_period_ms = DEFAULT_HB_MS;
 				go_away = true; 
 				hb_misses = 0;								// Reset misses after fallback
 			}
