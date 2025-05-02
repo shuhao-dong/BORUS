@@ -173,8 +173,8 @@ K_SEM_DEFINE(bmi270_isr_sem, 0, 20);
 // Timers for Periodic Tasks
 static struct k_timer heartbeat_timeout_timer; // For away detection
 static struct k_timer battery_timer;		   // For periodic battery reading
-static struct k_timer scan_open_timer;	   // For scan open
-static struct k_timer scan_close_timer;	   // For scan close
+static struct k_timer scan_open_timer;		   // For scan open
+static struct k_timer scan_close_timer;		   // For scan close
 
 /* -------------------- Configuration Constants -------------------- */
 
@@ -348,9 +348,9 @@ static struct fs_mount_t lfs_mount_p = {
 
 /* -------------------- Home Detection -------------------- */
 
-#define DEFAULT_HB_MS 60000	 // Default heartbeat check: controls how often we start a scan operation
-#define EARLY_MARGIN_MS 1000 // [T - early_margin, T + late_margin] as guard time
-#define LATE_MARGIN_MS 1000	// So we have a 4s scanning window 
+#define DEFAULT_HB_MS 60000		 // Default heartbeat check: controls how often we start a scan operation
+#define EARLY_MARGIN_MS 1000	 // [T - early_margin, T + late_margin] as guard time
+#define LATE_MARGIN_MS 1000		 // So we have a 4s scanning window
 #define MISSES_BEFORE_FALLBACK 3 // If we miss 3 heartbeat check, we fall back to default scan interval and enter away state
 #define AWAY_SCAN_WINDOW_MS (EARLY_MARGIN_MS + LATE_MARGIN_MS)
 
@@ -359,22 +359,22 @@ static struct k_work away_adv_work;
 static struct k_work_delayable away_scan_trigger_work;
 static struct k_work_delayable away_adv_stop_work;
 
-static uint32_t hb_period_ms = DEFAULT_HB_MS;	 // Heartbeat period in milliseconds, should be negotiated with AP, default to @ref DEFAULT_HB_MS
-static uint8_t hb_misses = 0;	// Number of missed heartbeats
+static uint32_t hb_period_ms = DEFAULT_HB_MS; // Heartbeat period in milliseconds, should be negotiated with AP, default to @ref DEFAULT_HB_MS
+static uint8_t hb_misses = 0;				  // Number of missed heartbeats
 static K_MUTEX_DEFINE(hb_lock);
 
 static uint64_t next_deadline_ms = 0; /* absolute time (ms)   */
 static bool period_learned = false;
 
-#define AWAY_INTERVAL_MIN_MS	(60 * 1000)
-#define AWAY_INTERVAL_MAX_MS	(5 * 60 * 1000)
+#define AWAY_INTERVAL_MIN_MS (60 * 1000)
+#define AWAY_INTERVAL_MAX_MS (5 * 60 * 1000)
 
-static uint32_t away_interval_ms = AWAY_INTERVAL_MIN_MS; 
+static uint32_t away_interval_ms = AWAY_INTERVAL_MIN_MS;
 
 /**
  * @brief Get the current time in milliseconds.
  */
-static inline uint64_t ms_now(void) /* shorthand            */
+static inline uint64_t ms_now(void)
 {
 	return k_uptime_get();
 }
@@ -686,7 +686,7 @@ static void enter_state(device_state_t new_state)
 
 		set_imu_rate(false); // Set low IMU rate and low-power mode
 		stop_advertising();	 // Stop advertising
-		away_interval_ms = AWAY_INTERVAL_MIN_MS; 
+		away_interval_ms = AWAY_INTERVAL_MIN_MS;
 		k_timer_start(&away_adv_timer, AWAY_ADV_INTERVAL, AWAY_ADV_INTERVAL);
 		break;
 
@@ -752,7 +752,7 @@ static bool parse_mfr_period(struct bt_data *d, void *user_data)
 		}
 
 		*period_ms = t_cs * 10U; /* hand back to caller */
-		return false;			  /* stop any further AD */
+		return false;			 /* stop any further AD */
 	}
 	return true; /* keep iterating      */
 }
@@ -1260,7 +1260,7 @@ static void away_adv_timer_expiry(struct k_timer *timer_id)
 	ARG_UNUSED(timer_id);
 	if (atomic_get(&current_state) != STATE_AWAY_LOGGING)
 	{
-		return; 
+		return;
 	}
 	k_work_submit(&away_adv_work);
 }
