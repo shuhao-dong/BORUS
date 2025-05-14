@@ -48,6 +48,7 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/random/random.h>
 
 LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
 
@@ -99,19 +100,20 @@ static struct k_thread ble_logger_thread_data;
 typedef enum
 {
 	STATE_INIT, // Initial state before normal operation
-	STATE_FIND_PERIOD,
 	STATE_HOME_ADVERTISING, // At home, advertise sensor data
 	STATE_AWAY_LOGGING,		// Away, log sensor data
 	STATE_CHARGING			// USB connected
 } device_state_t;
 
-static struct k_work heartbeat_timeout_work; // Work item for heartbeat timeout -> Away state
 static struct k_work battery_timeout_work;	 // Work item for battery timeout -> Periodic voltage reading
 static struct k_work usb_connect_work;		 // Work item for USB connect -> CHARGING state
 static struct k_work usb_disconnect_work;	 // Work item for USB disconnect -> HOME state (or chosen default)
 static struct k_work scan_found_ap_work;	 // Work item for Scan Found AP -> HOME state
 static struct k_work scan_open_work;
 static struct k_work scan_close_work;
+static struct k_work sync_check_work;
+static struct k_work_delayable sync_adv_stop_work;
+static struct k_work_delayable sync_scan_trigger_work; 
 
 // --- Use atomic type for state changes between threads/ISRs
 static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
@@ -171,9 +173,8 @@ K_SEM_DEFINE(bmi270_isr_sem, 0, 20);
 /* -------------------- Timers for hearbeat check -------------------- */
 
 // Timers for Periodic Tasks
-static struct k_timer heartbeat_timeout_timer; // For away detection
 static struct k_timer battery_timer;		   // For periodic battery reading
-static struct k_timer scan_open_timer;		   // For scan open
+static struct k_timer sync_check_timer;		   // For scan open
 static struct k_timer scan_close_timer;		   // For scan close
 
 /* -------------------- Configuration Constants -------------------- */
@@ -183,11 +184,12 @@ static struct k_timer scan_close_timer;		   // For scan close
 #define HEARTBEAT_TIMEOUT K_MINUTES(5)								  // If no heartbeat for 90s, assume away
 #define BLE_ADV_INTERVAL_MIN 32										  // BLE advertise interval 32*0.625 ms
 #define BLE_ADV_INTERVAL_MAX 33										  // BLE advertise interval
+#define SENSOR_ADV_PAYLOAD_TYPE	0x00
+#define SYNC_REQ_ADV_PAYLOAD_TYPE	0x01
 #define SENSOR_DATA_PACKET_SIZE 20									  // Size of the sensor data
 #define NONCE_LEN 8													  // Size of the encryption nonce
 #define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE + 1) // Size of the packet data
-#define SCAN_INTERVAL K_MINUTES(1)									  // BLE scan interval, start scan every 1 minute
-#define SCAN_WINDOW K_SECONDS(5)									  // BLE scan window, when started, scan for 5 seconds
+#define SYNC_REQ_PAYLOAD_LEN	(1 + 2)
 #define PRESSURE_BASE_HPA_X10 8500									  // Base offset in hPa x 10
 #define TEMPERATURE_LOW_LIMIT 30									  // -30 degree as the lowest temperature of interest
 #define TEMPERATURE_HIGH_LIMIT 40									  // +40 degree as the highest temperature of interest
@@ -201,11 +203,14 @@ USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00"); // Define the USB MSC LUN
 
 /* -------------------- BLE Legacy Configurations -------------------- */
 
-#define AWAY_ADV_INTERVAL K_MINUTES(1)		// How often we start to send anouncement back home adv
-#define AWAY_ADV_BURST_DURATION K_MSEC(500) // Duration to send advertisment
+#define SYNC_CHECK_INTERVAL_BASE_MS	60 * 1000
+#define SYNC_REQ_ADV_BURST_DURATION K_MSEC(500) // Duration to send advertisment
 #define X_ANNOUNCED_S 10					// Fixed time (seconds) announced until the next scan
-#define AWAY_ADV_PAYLOAD_TYPE 0x01			// anouncement packet type
-#define SENSOR_ADV_PAYLOAD_TYPE 0x00		// normal sensor data packet type
+#define MISSES_BEFORE_AWAY 3
+#define AWAY_BACKOFF_MAX_INTERVAL_MS	2 * 60 * 1000
+#define EARLY_MARGIN_MS	1000
+#define LATE_MARGIN_MS	1000
+#define SYNC_SCAN_WINDOW_MS	(EARLY_MARGIN_MS + LATE_MARGIN_MS)
 
 // Define BLE packet structure - Not used in real BLE packet
 typedef struct
@@ -219,7 +224,8 @@ typedef struct
 
 // Buffer for dynamic manufacturer data in advertisement
 static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
-static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN];
+static uint8_t manuf_payload_sensor[ENC_ADV_PAYLOAD_LEN];
+static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN]; 
 
 /**
  * If enable BT_LE_ADV_OPT_SCANNABLE, then pass sd as scan response data
@@ -240,15 +246,12 @@ static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 );
 
 // Type 0x00: Main adv packet (hold encrypted sensor data)
-struct bt_data ad[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))};
-
-#define AWAY_MANUF_DATA_LEN 3
-static uint8_t manuf_data_away[AWAY_MANUF_DATA_LEN];
+struct bt_data ad_sensor[] = {
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sensor, sizeof(manuf_payload_sensor))};
 
 // Type 0x01: Back home anouncement (hold next scan time)
-struct bt_data ad_away[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_data_away, sizeof(manuf_data_away))};
+struct bt_data ad_sync_req[] = {
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sync_req, sizeof(manuf_payload_sync_req))};
 
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
@@ -267,7 +270,6 @@ static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);
 
 static atomic_t adv_running_flag = ATOMIC_INIT(0);						 // Use atomic for ISR/thread safe
 static atomic_t current_adv_type = ATOMIC_INIT(SENSOR_ADV_PAYLOAD_TYPE); // Track which type is active
-
 static volatile bool scan_active = false;
 
 /* -------------------- IMU Configurations -------------------- */
@@ -348,28 +350,8 @@ static struct fs_mount_t lfs_mount_p = {
 
 /* -------------------- Home Detection -------------------- */
 
-#define DEFAULT_HB_MS 60000		 // Default heartbeat check: controls how often we start a scan operation
-#define EARLY_MARGIN_MS 1000	 // [T - early_margin, T + late_margin] as guard time
-#define LATE_MARGIN_MS 1000		 // So we have a 4s scanning window
-#define MISSES_BEFORE_FALLBACK 3 // If we miss 3 heartbeat check, we fall back to default scan interval and enter away state
-#define AWAY_SCAN_WINDOW_MS (EARLY_MARGIN_MS + LATE_MARGIN_MS)
-
-static struct k_timer away_adv_timer;
-static struct k_work away_adv_work;
-static struct k_work_delayable away_scan_trigger_work;
-static struct k_work_delayable away_adv_stop_work;
-
-static uint32_t hb_period_ms = DEFAULT_HB_MS; // Heartbeat period in milliseconds, should be negotiated with AP, default to @ref DEFAULT_HB_MS
-static uint8_t hb_misses = 0;				  // Number of missed heartbeats
-static K_MUTEX_DEFINE(hb_lock);
-
-static uint64_t next_deadline_ms = 0; /* absolute time (ms)   */
-static bool period_learned = false;
-
-#define AWAY_INTERVAL_MIN_MS (60 * 1000)
-#define AWAY_INTERVAL_MAX_MS (5 * 60 * 1000)
-
-static uint32_t away_interval_ms = AWAY_INTERVAL_MIN_MS;
+static uint8_t missed_sync_responses = 0;
+static uint32_t sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
 
 /**
  * @brief Get the current time in milliseconds.
@@ -377,34 +359,6 @@ static uint32_t away_interval_ms = AWAY_INTERVAL_MIN_MS;
 static inline uint64_t ms_now(void)
 {
 	return k_uptime_get();
-}
-
-/**
- * @brief Schedule the scan open timer based on the next deadline.
- *
- * This function calculates the time until the next deadline and sets the
- * scan open timer accordingly. If no period has been learned, it does nothing.
- */
-static void schedule_open_from_deadline(void)
-{
-	if (!period_learned || atomic_get(&current_state) != STATE_HOME_ADVERTISING)
-	{ /* no beacon yet → do nothing   */
-		return;
-	}
-
-	int64_t deadline = 0;
-	k_mutex_lock(&hb_lock, K_FOREVER);
-	deadline = next_deadline_ms;
-	k_mutex_unlock(&hb_lock);
-
-	int64_t delta_ms = deadline - EARLY_MARGIN_MS - ms_now();
-	if (delta_ms < 0)
-	{
-		delta_ms = 0;
-	}
-
-	LOG_DBG("HOME: Scheduling next periodic scan in %lld ms", delta_ms);
-	k_timer_start(&scan_open_timer, K_MSEC(delta_ms), K_NO_WAIT);
 }
 
 /* -------------------- State Management Functions -------------------- */
@@ -528,7 +482,7 @@ static void start_sensor_advertising(void)
 	}
 
 	LOG_DBG("Starting Sensor Data advertising (Type 0x00)");
-	ret = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), NULL, 0);
+	ret = bt_le_adv_start(adv_param, ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
 
 	if (ret && ret != -EALREADY)
 	{
@@ -553,7 +507,7 @@ static void start_sensor_advertising(void)
  * This function starts a BLE advertisement burst for the AWAY state.
  * It will not start if already running.
  */
-static void start_away_adv_burst(void)
+static void start_sync_request_advertising(void)
 {
 	int ret;
 
@@ -563,13 +517,13 @@ static void start_away_adv_burst(void)
 
 	if (atomic_get(&adv_running_flag))
 	{
-		LOG_WRN("Attempted to start AWAY ADV, but ADV is already running");
+		LOG_WRN("Attempted to start SYNC REQ ADV, but ADV is already running");
 		return;
 	}
 
 	LOG_DBG("Starting AWAY Scan Announcement advertising burst (Type 0x01)");
 
-	ret = bt_le_adv_start(adv_param, ad_away, ARRAY_SIZE(ad_away), NULL, 0);
+	ret = bt_le_adv_start(adv_param, ad_sync_req, ARRAY_SIZE(ad_sync_req), NULL, 0);
 	if (ret && ret != -EALREADY)
 	{
 		LOG_ERR("Failed to start AWAY Scan Announce advertisement: %d", ret);
@@ -583,8 +537,33 @@ static void start_away_adv_burst(void)
 	{
 		LOG_DBG("AWAY Scan Announce advertising burst started");
 		atomic_set(&adv_running_flag, 1);
-		atomic_set(&current_adv_type, AWAY_ADV_PAYLOAD_TYPE);
+		atomic_set(&current_adv_type, SYNC_REQ_ADV_PAYLOAD_TYPE);
 	}
+}
+
+static void sync_adv_stop_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
+	{
+		stop_advertising();
+	}
+}
+
+static void sync_scan_trigger_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	device_state_t state = atomic_get(&current_state); 
+
+	if (state == STATE_AWAY_LOGGING || STATE_HOME_ADVERTISING)
+	{
+		LOG_DBG("Sync Scan Triggers: Submitting scan_open_work");
+		k_work_submit(&scan_open_work);
+	} else 
+	{
+		LOG_WRN("Sync Scan Trigger ran but state is %d", state); 
+	}
+	
 }
 
 /**
@@ -614,21 +593,22 @@ static void enter_state(device_state_t new_state)
 	{
 	case STATE_HOME_ADVERTISING:
 		LOG_DBG("Exiting HOME: Stopping sensor ADV timer and radio.");
-
-		k_timer_stop(&heartbeat_timeout_timer); // stops checking for loss of AP
 		stop_advertising();
-		k_timer_stop(&scan_open_timer);
+		k_timer_stop(&sync_check_timer);
 		k_timer_stop(&scan_close_timer);
+		if (scan_active)
+		{
+			bt_le_scan_stop();
+			scan_active = false;
+		}
 		break;
-
 	case STATE_AWAY_LOGGING:
 		LOG_DBG("Exiting AWAY: Stopping AWAY ADV timer, work, and radio.");
 
-		k_timer_stop(&away_adv_timer);
-		(void)k_work_cancel_delayable(&away_adv_stop_work);
-		(void)k_work_cancel_delayable(&away_scan_trigger_work);
+		k_timer_stop(&sync_check_timer);
+		(void)k_work_cancel_delayable(&sync_adv_stop_work);
+		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
 		stop_advertising();
-		k_timer_stop(&scan_open_timer);
 		k_timer_stop(&scan_close_timer);
 		if (scan_active)
 		{
@@ -636,20 +616,9 @@ static void enter_state(device_state_t new_state)
 			scan_active = false;
 		}
 		break;
-
 	case STATE_CHARGING:
 		LOG_DBG("Exiting CHARGING.");
 		break;
-
-	case STATE_FIND_PERIOD:
-		LOG_DBG("Exiting FIND_PERIOD: Stopping scan.");
-		if (scan_active)
-		{
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		break;
-
 	default: // STATE_INIT or others
 		break;
 	}
@@ -657,104 +626,48 @@ static void enter_state(device_state_t new_state)
 	// Actions on ENTERING the new state
 	switch (new_state)
 	{
-	case STATE_FIND_PERIOD:
-		LOG_INF("Scanning to learn AP period ... ");
-
-		stop_advertising();
-		k_mutex_lock(&hb_lock, K_FOREVER);
-		period_learned = false;
-		next_deadline_ms = 0;
-		hb_period_ms = DEFAULT_HB_MS;
-		hb_misses = 0;
-		k_mutex_unlock(&hb_lock);
-		k_timer_stop(&scan_open_timer);
-		k_timer_stop(&scan_close_timer);
-		k_work_submit(&scan_open_work);
-		break;
-
 	case STATE_HOME_ADVERTISING:
 		LOG_INF("Entering Home Adv Mode");
-
 		set_imu_rate(true);													   // Set high IMU rate and performance mode
+		missed_sync_responses = 0; 
+		sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS; 
 		start_sensor_advertising();											   // Start BLE advertisement
-		k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT); // Start timer to track in-home
-		schedule_open_from_deadline();
+		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); // Start timer to track in-home
 		break;
-
 	case STATE_AWAY_LOGGING:
 		LOG_INF("Entering Away Log Mode");
-
 		set_imu_rate(false); // Set low IMU rate and low-power mode
 		stop_advertising();	 // Stop advertising
-		away_interval_ms = AWAY_INTERVAL_MIN_MS;
-		k_timer_start(&away_adv_timer, AWAY_ADV_INTERVAL, AWAY_ADV_INTERVAL);
+		uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4); 
+		k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(sync_check_interval_ms));
 		break;
-
 	case STATE_CHARGING:
 		// Ensure other activities are stopped
 		LOG_INF("Entering Charging Mode");
-
 		stop_advertising();
-		k_timer_stop(&heartbeat_timeout_timer);
-		k_timer_stop(&away_adv_timer);
-		(void)k_work_cancel_delayable(&away_adv_stop_work);
-		(void)k_work_cancel_delayable(&away_scan_trigger_work);
+		k_timer_stop(&sync_check_timer);
+		(void)k_work_cancel_delayable(&sync_adv_stop_work);
+		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
 		if (scan_active)
 		{
 			LOG_DBG("Stopped active scan on entering CHARGING state");
 			bt_le_scan_stop();
 			scan_active = false;
 		}
-		k_timer_stop(&scan_open_timer);
 		k_timer_stop(&scan_close_timer);
 		break;
-
 	case STATE_INIT:
 		LOG_INF("Entering INIT state.");
-
 		stop_advertising();
 		if (scan_active)
 		{
 			bt_le_scan_stop();
 			scan_active = false;
 		}
-		k_timer_stop(&scan_open_timer);
 		k_timer_stop(&scan_close_timer);
-		k_timer_stop(&heartbeat_timeout_timer);
-		k_timer_stop(&away_adv_timer);
+		k_timer_stop(&sync_check_timer);
 		break;
 	}
-}
-
-/**
- * @brief Parse the manufacturer data from the advertisement packet to get time for scan.
- *
- * This function checks if the manufacturer data contains a specific CID and
- * extracts the period in milliseconds from it.
- *
- * @param d Pointer to the Bluetooth data structure.
- * @param user_data Pointer to user data (in this case, a pointer to store the period).
- *
- * @return true to continue parsing, false to stop parsing.
- */
-static bool parse_mfr_period(struct bt_data *d, void *user_data)
-{
-	uint16_t *period_ms = user_data;
-
-	if (d->type == BT_DATA_MANUFACTURER_DATA &&
-		d->data_len >= 4 &&				 /* 2 B CID + 2 B time  */
-		sys_get_le16(d->data) == 0x0059) /* Nordic CID          */
-	{
-		uint16_t t_cs = sys_get_le16(d->data + 2); /*   Time_L + Time_H   */
-		if (t_cs == 0)
-		{				 /* ignore “0 s” keep-alive bursts */
-			return true; /* keep parsing                      */
-		}
-
-		*period_ms = t_cs * 10U; /* hand back to caller */
-		return false;			 /* stop any further AD */
-	}
-	return true; /* keep iterating      */
 }
 
 /**
@@ -781,32 +694,9 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 
 	char addr_str[BT_ADDR_LE_STR_LEN];
 	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
+	LOG_INF("Heartbeat from %s, RSSI=%d", addr_str, rssi);
 
-	/* 2. Pull the period out of the Manufacturer field */
-	uint16_t new_period_ms = 0;
-	bt_data_parse(buf, parse_mfr_period, &new_period_ms);
-	if (new_period_ms == 0)
-	{ /* malformed or keep-alive  */
-		return;
-	}
-
-	LOG_DBG("packet @%llu, δ = %lld ms",
-			(unsigned long long)ms_now(), /* arrival      */
-			(long long)((int64_t)ms_now() -
-						(int64_t)next_deadline_ms));
-
-	LOG_INF("Heartbeat from %s  period=%u ms  RSSI=%d", addr_str, new_period_ms, rssi);
-
-	/* 3. Update shared timing info */
-	k_mutex_lock(&hb_lock, K_FOREVER);
-	bool first_learn = !period_learned;
-	period_learned = true;
-	hb_period_ms = new_period_ms;
-	hb_misses = 0;
-	next_deadline_ms = ms_now() + hb_period_ms;
-	LOG_DBG("Updated timing: period=%u ms, next_deadline=%llu ms", hb_period_ms, next_deadline_ms);
-	k_mutex_unlock(&hb_lock);
-
+	// Stop scan and close timer 
 	if (scan_active)
 	{
 		bt_le_scan_stop();
@@ -814,35 +704,22 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 	}
 	k_timer_stop(&scan_close_timer);
 
-	/* 4. State-dependent handling */
+	// Reset miss counter
+	missed_sync_responses = 0;
+	sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
 
+	// Handle state 
 	device_state_t s = atomic_get(&current_state);
 
-	if (s == STATE_FIND_PERIOD || s == STATE_AWAY_LOGGING || first_learn)
+	if (s == STATE_AWAY_LOGGING)
 	{
-		// Found AP while searching, or while away, or first time learning in HOME
-		LOG_INF("AP Found: Transitioning/Confirming HOME state.");
-		// Submit work which will call enter_state(HOME)
-		k_work_submit(&scan_found_ap_work);
+		LOG_DBG("Sync Response Received: Transitioning to HOME state.");
+		enter_state(STATE_HOME_ADVERTISING); 
 	}
 	else if (s == STATE_HOME_ADVERTISING)
 	{
-		// Found AP while already HOME - just reschedule next scan and reset timeout timer
-		LOG_DBG("AP Found: Refreshing HOME state.");
-
-		if (!atomic_get(&adv_running_flag))
-		{ // Check if not already running (shouldn't be)
-			LOG_DBG("Scan CB (HOME): Restarting sensor advertising.");
-			start_sensor_advertising();
-		}
-		else
-		{
-			LOG_WRN("Scan CB (HOME): ADV flag was unexpectedly 1 before restarting.");
-			// Still attempt to ensure sensor ADV is running
-			start_sensor_advertising();
-		}
-		schedule_open_from_deadline();										   // Schedule next periodic scan
-		k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT); // Restart timeout
+		LOG_DBG("Sync Response Received: Confirmed HOME state.");
+		start_sensor_advertising(); 
 	}
 }
 
@@ -878,55 +755,6 @@ static void queue_initial_battery_level(void)
 }
 
 /**
- * @brief Handle the away scan trigger work item.
- *
- * This function is called when the away scan trigger work item is triggered.
- * It submits the scan open work item if the current state is AWAY_LOGGING.
- *
- * @param work Pointer to the work structure.
- */
-static void away_scan_trigger_handler(struct k_work *work)
-{
-	ARG_UNUSED(work);
-
-	device_state_t state = atomic_get(&current_state);
-	if (state == STATE_AWAY_LOGGING)
-	{
-		LOG_DBG("AWAY Scan Trigger: Submitting scan_open_work");
-		k_work_submit(&scan_open_work);
-	}
-	else
-	{
-		LOG_WRN("AWAY Scan Trigger ran but state is %d, not AWAY", state);
-	}
-}
-
-/**
- * @brief Handle the away advertisement stop work item.
- *
- * This function is called when the away advertisement stop work item is triggered.
- * It stops the AWAY advertisement if it is currently running.
- *
- * @param work Pointer to the work structure.
- */
-static void away_adv_stop_work_handler(struct k_work *work)
-{
-	ARG_UNUSED(work);
-
-	LOG_DBG("Stopping AWAY Scan Announcement burst");
-
-	// Only stop if current advertisement type is indeed AWAY (0x01)
-	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == AWAY_ADV_PAYLOAD_TYPE)
-	{
-		stop_advertising();
-	}
-	else
-	{
-		LOG_WRN("Stop work ran, but AWAY ADV wasn't active");
-	}
-}
-
-/**
  * @brief Handle the away advertisement work item.
  *
  * This function is called when the away advertisement work item is triggered.
@@ -934,14 +762,15 @@ static void away_adv_stop_work_handler(struct k_work *work)
  *
  * @param work Pointer to the work structure.
  */
-static void away_adv_work_handler(struct k_work *work)
+static void sync_check_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
+	device_state_t state = atomic_get(&current_state); 
 	// Only proceed if we are actually in AWAY state
-	if (atomic_get(&current_state) != STATE_AWAY_LOGGING)
+	if (state != STATE_AWAY_LOGGING && state != STATE_HOME_ADVERTISING)
 	{
-		LOG_WRN("Away adv work handler ran, but state is not AWAY, aborting");
+		LOG_WRN("Sync check work ran in unexpected state %d", state);
 		return;
 	}
 
@@ -950,14 +779,14 @@ static void away_adv_work_handler(struct k_work *work)
 	LOG_DBG("Preparing Type 0x01 ADV. Announcing scan reference time: %u seconds", time_to_announce_s);
 
 	// Prepare payload: [ Type | Time LSB | MSB ]
-	manuf_data_away[0] = AWAY_ADV_PAYLOAD_TYPE;
-	sys_put_le16(time_to_announce_s, &manuf_data_away[1]);
+	manuf_payload_sync_req[0] = SYNC_REQ_ADV_PAYLOAD_TYPE;
+	sys_put_le16(time_to_announce_s, &manuf_payload_sync_req[1]);
 
-	start_away_adv_burst();
+	start_sync_request_advertising(); 
 
 	if (atomic_get(&adv_running_flag))
 	{
-		k_work_schedule(&away_adv_stop_work, AWAY_ADV_BURST_DURATION);
+		k_work_schedule(&sync_adv_stop_work, SYNC_REQ_ADV_BURST_DURATION);
 
 		int32_t scan_trigger_delay_ms = (time_to_announce_s * 1000) - EARLY_MARGIN_MS;
 		if (scan_trigger_delay_ms < 0)
@@ -966,11 +795,14 @@ static void away_adv_work_handler(struct k_work *work)
 		}
 		LOG_DBG("Scheduling scan trigger work in %d ms.", scan_trigger_delay_ms);
 
-		int ret = k_work_schedule(&away_scan_trigger_work, K_MSEC(scan_trigger_delay_ms));
+		int ret = k_work_schedule(&sync_scan_trigger_work, K_MSEC(scan_trigger_delay_ms));
 		if (ret < 0)
 		{
 			LOG_ERR("Failed to schedule away scan trigger work (%d)", ret);
 		}
+	} else 
+	{
+		LOG_ERR("Sync Req ADV failed to start, scan not scheduled"); 
 	}
 }
 
@@ -983,14 +815,17 @@ static void away_adv_work_handler(struct k_work *work)
  * @param w Pointer to the work structure.
  */
 static void scan_open_work_handler(struct k_work *w)
-{
-	/* Stop legacy ADV while scanning */
+{	
+	ARG_UNUSED(w);
+
+	// Stop any advertising before scanning
 	if (atomic_get(&adv_running_flag))
 	{
 		bt_le_adv_stop();
 		atomic_set(&adv_running_flag, 0);
 	}
 
+	LOG_DBG("Scan Open Work: Starting scan (State: %d)", (int)atomic_get(&current_state)); 
 	int err = bt_le_scan_start(&scan_param, scan_cb);
 	if (err && err != -EALREADY)
 	{
@@ -1000,28 +835,8 @@ static void scan_open_work_handler(struct k_work *w)
 	}
 	scan_active = true;
 
-	k_timeout_t scan_duration;
-	device_state_t state = atomic_get(&current_state);
-
-	if (state == STATE_FIND_PERIOD)
-	{
-		LOG_DBG("Scan Open: Continuous scan started (FIND_PERIOD).");
-		return;
-	}
-	else if (state == STATE_AWAY_LOGGING)
-	{
-		// Use specific duration for scan triggered from AWAY state
-		scan_duration = K_MSEC(AWAY_SCAN_WINDOW_MS); // Use the defined window
-		LOG_DBG("Scan Open: Starting timed scan (AWAY - %d ms window).", AWAY_SCAN_WINDOW_MS);
-	}
-	else
-	{
-		// Use standard margin-based duration for HOME periodic scans
-		scan_duration = K_MSEC(EARLY_MARGIN_MS + LATE_MARGIN_MS);
-		LOG_DBG("Scan Open: Starting timed scan (HOME - %d ms window).", EARLY_MARGIN_MS + LATE_MARGIN_MS);
-	}
-
-	k_timer_start(&scan_close_timer, scan_duration, K_NO_WAIT);
+	k_timer_start(&scan_close_timer, K_MSEC(SYNC_SCAN_WINDOW_MS), K_NO_WAIT);
+	LOG_DBG("Scan Open: Scan started (%d ms window).", SYNC_SCAN_WINDOW_MS);
 }
 
 /**
@@ -1034,76 +849,48 @@ static void scan_open_work_handler(struct k_work *w)
  */
 static void scan_close_work_handler(struct k_work *w)
 {
+	ARG_UNUSED(w);
+
 	if (scan_active)
 	{
 		bt_le_scan_stop();
 		scan_active = false;
 	}
+	LOG_DBG("Scan Close Work: Scan window finished (AP Response MISSING).");
 
 	device_state_t state = atomic_get(&current_state);
 
 	if (state == STATE_HOME_ADVERTISING)
 	{
-		LOG_DBG("Scan Close Work: In HOME state (scan missed AP).");
-		// Count misses / enter fallback ONLY if period was learned
-		if (period_learned)
+		missed_sync_responses ++; 
+		LOG_WRN("Sync Response Missed (%u/%u) while HOME", missed_sync_responses, MISSES_BEFORE_AWAY); 
+		
+		if (missed_sync_responses >= MISSES_BEFORE_AWAY)
 		{
-			bool go_away = false;
-
-			k_mutex_lock(&hb_lock, K_FOREVER); // Protect shared variables
-
-			next_deadline_ms += hb_period_ms; // Definitely missed this burst, roll deadline forward
-
-			if (++hb_misses >= MISSES_BEFORE_FALLBACK)
+			LOG_WRN("Missed %u consecutive Sync Responses, entering AWAY", MISSES_BEFORE_AWAY);
+			enter_state(STATE_AWAY_LOGGING);
+		} else
+		{
+			if (!atomic_get(&adv_running_flag))
 			{
-				LOG_WRN("Missed %u heartbeats → fallback to default period %u ms",
-						MISSES_BEFORE_FALLBACK, DEFAULT_HB_MS);
-				hb_period_ms = DEFAULT_HB_MS;
-				go_away = true;
-				hb_misses = 0; // Reset misses after fallback
-			}
-			// If misses < threshold, next_deadline_ms is not changed here
-			k_mutex_unlock(&hb_lock);
-
-			if (go_away)
-			{
-				LOG_WRN("Missed %u consecutive heartbeats - entering AWAY", MISSES_BEFORE_FALLBACK);
-				enter_state(STATE_AWAY_LOGGING);
-				return;
+				LOG_DBG("Scan Close (HOME miss): Restarting sensor advertising");
+				start_sensor_advertising();
 			}
 		}
-		// Restart sensor advertising
-		if (!atomic_get(&adv_running_flag))
-		{
-			LOG_DBG("Scan Close Work: Restarting sensor advertising.");
-			start_sensor_advertising();
-		}
-		// Schedule the next periodic scan attempt
-		schedule_open_from_deadline();
-	}
-	else if (state == STATE_AWAY_LOGGING)
+	} else if (state == STATE_AWAY_LOGGING)
 	{
-		LOG_DBG("Scan Close Work: In AWAY state (targeted scan failed).");
-		away_interval_ms = MIN(away_interval_ms + 60000, AWAY_INTERVAL_MAX_MS);
-		LOG_DBG("Back-off: next away announcement is %u ms", away_interval_ms);
-		k_timer_start(&away_adv_timer, K_MSEC(away_interval_ms), K_NO_WAIT);
-		// The next attempt will be initiated by away_adv_timer.
-		// Ensure advertising is stopped (should be already).
-		if (atomic_get(&adv_running_flag))
-		{
-			LOG_WRN("Scan Close Work (AWAY): ADV was unexpectedly running, stopping.");
-			stop_advertising();
-		}
-	}
-	else
-	{
-		LOG_DBG("Scan Close Work: In unexpected state %d.", state);
-		// Ensure ADV/Scan are stopped for safety
+		LOG_WRN("Sync Response MISSED while AWAY");
+		sync_check_interval_ms = MIN(sync_check_interval_ms * 2, AWAY_BACKOFF_MAX_INTERVAL_MS);
+		sync_check_interval_ms += sys_rand32_get() * (SYNC_CHECK_INTERVAL_BASE_MS / 2);
+		sync_check_interval_ms = MIN(sync_check_interval_ms, AWAY_BACKOFF_MAX_INTERVAL_MS);
+
+		LOG_INF("AWAY Backoff: Next sync check attempt in %u ms", sync_check_interval_ms);
+		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); 
+
 		if (atomic_get(&adv_running_flag))
 		{
 			stop_advertising();
 		}
-		// Scan should already be stopped
 	}
 }
 
@@ -1140,29 +927,6 @@ static void battery_timeout_work_handler(struct k_work *work)
 }
 
 /**
- * @brief Handle heartbeat timeout events.
- *
- * This function is called when the heartbeat timer expires. It transitions the
- * device to the AWAY state if the current state is HOME.
- *
- * @param work Pointer to the work structure.
- */
-static void heartbeat_timeout_work_handler(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	LOG_DBG("Workqueue: Heartbeat timeout expired, entering AWAY");
-
-	if (atomic_get(&current_state) == STATE_HOME_ADVERTISING)
-	{
-		enter_state(STATE_AWAY_LOGGING);
-	}
-	else
-	{
-		LOG_WRN("Workqueue: Heartbeat timeout work ran, but state was not HOME: %d", (int)atomic_get(&current_state));
-	}
-}
-
-/**
  * @brief Handle USB connection events.
  *
  * This function is called when the USB is connected. It transitions the device
@@ -1195,32 +959,14 @@ static void usb_disconnect_work_handler(struct k_work *work)
 	LOG_DBG("Workqueue: USB disconnected, entering HOME");
 
 	if (atomic_get(&current_state) == STATE_CHARGING)
-	{
-		k_mutex_lock(&hb_lock, K_FOREVER);
-		period_learned = false;
-		next_deadline_ms = 0;
-		hb_period_ms = DEFAULT_HB_MS;
-		hb_misses = 0;
-		k_mutex_unlock(&hb_lock);
-
-		k_timer_stop(&scan_open_timer);
-		k_timer_stop(&scan_close_timer);
-
-		enter_state(STATE_FIND_PERIOD);
+	{	
+		LOG_DBG("Workqueue: USB Disconnected, entering AWAY state to initiate sync check"); 
+		enter_state(STATE_HOME_ADVERTISING);
 	}
 	else
 	{
-		LOG_WRN("USB disconnect event when not in CHARGING state (%d). Entering FIND_PERIOD anyway.", (int)atomic_get(&current_state));
-		// Reset timing info as above
-		k_mutex_lock(&hb_lock, K_FOREVER);
-		period_learned = false;
-		next_deadline_ms = 0;
-		hb_period_ms = DEFAULT_HB_MS;
-		hb_misses = 0;
-		k_mutex_unlock(&hb_lock);
-		k_timer_stop(&scan_open_timer);
-		k_timer_stop(&scan_close_timer);
-		enter_state(STATE_FIND_PERIOD);
+		LOG_WRN("USB disconnect event when not in CHARGING state (%d). Forcing AWAY state.", (int)atomic_get(&current_state));
+		enter_state(STATE_HOME_ADVERTISING);
 	}
 }
 
@@ -1255,65 +1001,14 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 	}
 }
 
-static void away_adv_timer_expiry(struct k_timer *timer_id)
+static void sync_check_timer_expiry(struct k_timer *timer_id)
 {
 	ARG_UNUSED(timer_id);
-	if (atomic_get(&current_state) != STATE_AWAY_LOGGING)
+	device_state_t state = atomic_get(&current_state); 
+	if (state == STATE_AWAY_LOGGING || state == STATE_HOME_ADVERTISING)
 	{
-		return;
+		k_work_submit(&sync_check_work);
 	}
-	k_work_submit(&away_adv_work);
-}
-
-/**
- * @brief Handle the scan open timer expiry event.
- *
- * This function is called when the scan open timer expires. It checks if the
- * period has been learned and schedules the scan open work accordingly.
- *
- * @param t Pointer to the timer structure.
- */
-static void scan_open_timer_expiry(struct k_timer *t)
-{
-	// This timer should now only fire when in HOME state for periodic scans
-	device_state_t state = atomic_get(&current_state);
-	if (state != STATE_HOME_ADVERTISING)
-	{
-		LOG_WRN("Scan Open Timer expired in unexpected state %d", state);
-		return;
-	}
-
-	if (!period_learned)
-	{			/* still in continuous scan     */
-		return; /* wait for first heartbeat     */
-	}
-
-	// Check timing relative to deadline (original logic)
-	k_mutex_lock(&hb_lock, K_FOREVER); // Protect deadline access
-	int64_t deadline = next_deadline_ms;
-	k_mutex_unlock(&hb_lock); // Release lock after reading deadline
-
-	int32_t late = (int32_t)(ms_now() - (deadline - EARLY_MARGIN_MS));
-
-	if (late > LATE_MARGIN_MS)
-	{
-		LOG_WRN("Scan Open Timer: Scan window missed (late by %d ms). Counting miss.", late);
-		k_mutex_lock(&hb_lock, K_FOREVER); // Lock to update miss count etc.
-		if (++hb_misses >= MISSES_BEFORE_FALLBACK)
-		{
-			LOG_WRN("Missed %u heartbeats → fallback to default period", MISSES_BEFORE_FALLBACK);
-			hb_period_ms = DEFAULT_HB_MS;
-			hb_misses = 0;								// Reset misses after fallback
-			next_deadline_ms = ms_now() + hb_period_ms; // Recalculate deadline
-		}
-		// Schedule next attempt even if missed this one
-		schedule_open_from_deadline(); // Needs lock to read potentially updated deadline
-		k_mutex_unlock(&hb_lock);	   // Release lock
-		return;
-	}
-
-	/* OK, still in band → proceed with real radio scan */
-	k_work_submit(&scan_open_work);
 }
 
 /**
@@ -1357,20 +1052,6 @@ void battery_timer_expiry(struct k_timer *timer_id)
 {
 	LOG_DBG("Heartbeat timer expired, submitting work");
 	k_work_submit(&battery_timeout_work);
-}
-
-/**
- * @brief Handle heartbeat timer expiry events.
- *
- * This function is called when the heartbeat timer expires. It submits the
- * heartbeat timeout work to the workqueue.
- *
- * @param timer_id Pointer to the timer structure.
- */
-void heartbeat_timeout_expiry(struct k_timer *timer_id)
-{
-	LOG_DBG("Heartbeat timer expired, submitting work");
-	k_work_submit(&heartbeat_timeout_work);
 }
 
 /**
@@ -1870,7 +1551,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				prepare_packet(&current_sensor_state, manuf_plain, sizeof(manuf_plain));
 
 				// Encrypt to 31-byte buffer
-				ret = encrypt_sensor_block(manuf_plain, manuf_encrypted);
+				ret = encrypt_sensor_block(manuf_plain, manuf_payload_sensor);
 				if (ret != 0)
 				{
 					LOG_ERR("Encrypt failed - ADV not updated: %d", ret);
@@ -1882,7 +1563,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE)
 				{
 					// Update the advertising data (non-blocking)
-					ret = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
+					ret = bt_le_adv_update_data(ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
 					if (ret && ret != -EALREADY)
 					{
 						LOG_WRN("Failed to update ADV data: %d", ret);
@@ -2030,15 +1711,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
-static inline bool adaptive_has_lock(void)
-{
-	bool learned;
-	k_mutex_lock(&hb_lock, K_FOREVER);
-	learned = (hb_period_ms != DEFAULT_HB_MS);
-	k_mutex_unlock(&hb_lock);
-	return learned; /* true ⇒ we already know the period */
-}
-
 /**
  * @brief Main entry point of the application.
  *
@@ -2051,7 +1723,7 @@ int main(void)
 {
 	int ret;
 
-	device_state_t initial_state = STATE_FIND_PERIOD;
+	device_state_t initial_state = STATE_HOME_ADVERTISING;
 
 	LOG_INF("===== Thingy Application Starting =====");
 
@@ -2308,23 +1980,20 @@ int main(void)
 	}
 
 	// --- Initialise Timers ---
-	k_timer_init(&heartbeat_timeout_timer, (k_timer_expiry_t)heartbeat_timeout_expiry, NULL);
 	k_timer_init(&battery_timer, (k_timer_expiry_t)battery_timer_expiry, NULL);
-	k_timer_init(&away_adv_timer, away_adv_timer_expiry, NULL);
-	k_timer_init(&scan_open_timer, scan_open_timer_expiry, NULL);
+	k_timer_init(&sync_check_timer, sync_check_timer_expiry, NULL);
 	k_timer_init(&scan_close_timer, scan_close_timer_expiry, NULL);
 
 	// Initialise workqueue items
 	k_work_init(&battery_timeout_work, battery_timeout_work_handler);
-	k_work_init(&heartbeat_timeout_work, heartbeat_timeout_work_handler);
 	k_work_init(&usb_connect_work, usb_connect_work_handler);
 	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
 	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
 	k_work_init(&scan_open_work, scan_open_work_handler);
 	k_work_init(&scan_close_work, scan_close_work_handler);
-	k_work_init(&away_adv_work, away_adv_work_handler);						// Init new work
-	k_work_init_delayable(&away_adv_stop_work, away_adv_stop_work_handler); // Init new delayable work
-	k_work_init_delayable(&away_scan_trigger_work, away_scan_trigger_handler);
+	k_work_init(&sync_check_work, sync_check_work_handler);						// Init new work
+	k_work_init_delayable(&sync_adv_stop_work, sync_adv_stop_work_handler); // Init new delayable work
+	k_work_init_delayable(&sync_scan_trigger_work, sync_scan_trigger_handler);
 
 	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
 
