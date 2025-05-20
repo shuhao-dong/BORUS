@@ -11,8 +11,8 @@
  * Version: v0.1.0
  *
  * Date: 16/04/2025
- * 
- * TBD: BLE encryption, BLE Extended adv 
+ *
+ * TBD: BLE encryption, BLE Extended adv
  */
 
 #include <stdio.h>
@@ -47,8 +47,10 @@
 #include <psa/crypto_values.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/watchdog.h>
+#include <zephyr/sys/util.h>
+#include <zephyr/random/random.h>
 
-LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
 
 /* -------------------- Watchdog Timer --------------------*/
 
@@ -70,16 +72,16 @@ static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 		1024
-#define BMP390_HANDLER_STACKSIZE 		1024
-#define BLE_LOGGER_THREAD_STACKSIZE 	4096
-#define SCANNER_THREAD_STACKSIZE 		1024
+#define BMI270_HANDLER_STACKSIZE 1024
+#define BMP390_HANDLER_STACKSIZE 1024
+#define BLE_LOGGER_THREAD_STACKSIZE 4096
+#define SCANNER_THREAD_STACKSIZE 1024
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 		5	// Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 		6	// Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 			7	// Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 		7 	// Lower priority tasks for scan AP heartbeat
+#define BMI270_HANDLER_PRIORITY 5 // Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 6 // Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 7	  // Lower priority tasks for BLE and logging
+#define SCANNER_THREAD_PRIORITY 7 // Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -91,29 +93,27 @@ K_THREAD_STACK_DEFINE(scanner_stack_area, SCANNER_THREAD_STACKSIZE);
 static struct k_thread bmi270_handler_thread_data;
 static struct k_thread bmp390_handler_thread_data;
 static struct k_thread ble_logger_thread_data;
-static struct k_thread scanner_thread_data;
 
 /* -------------------- State Machine -------------------- */
 
 // Define the state structure
 typedef enum
 {
-	STATE_INIT,					// Initial state before normal operation
-	STATE_HOME_ADVERTISING, 	// At home, advertise sensor data
-	STATE_AWAY_LOGGING,			// Away, log sensor data
-	STATE_CHARGING				// USB connected
+	STATE_INIT, // Initial state before normal operation
+	STATE_HOME_ADVERTISING, // At home, advertise sensor data
+	STATE_AWAY_LOGGING,		// Away, log sensor data
+	STATE_CHARGING			// USB connected
 } device_state_t;
 
-// Work item for heartbeat timeout -> Away state
-static struct k_work heartbeat_timeout_work;
-// Work item for battery timeout -> Periodic voltage reading
-static struct k_work battery_timeout_work;
-// Work item for USB connect -> CHARGING state
-static struct k_work usb_connect_work;
-// Work item for USB disconnect -> HOME state (or chosen default)
-static struct k_work usb_disconnect_work;
-// Work item for Scan Found AP -> HOME state
-static struct k_work scan_found_ap_work;
+static struct k_work battery_timeout_work;	 // Work item for battery timeout -> Periodic voltage reading
+static struct k_work usb_connect_work;		 // Work item for USB connect -> CHARGING state
+static struct k_work usb_disconnect_work;	 // Work item for USB disconnect -> HOME state (or chosen default)
+static struct k_work scan_found_ap_work;	 // Work item for Scan Found AP -> HOME state
+static struct k_work scan_open_work;
+static struct k_work scan_close_work;
+static struct k_work sync_check_work;
+static struct k_work_delayable sync_adv_stop_work;
+static struct k_work_delayable sync_scan_trigger_work; 
 
 // --- Use atomic type for state changes between threads/ISRs
 static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
@@ -143,7 +143,7 @@ typedef struct
 	uint32_t timestamp;
 } environment_payload_t;
 
-// Battery voltage data structure 
+// Battery voltage data structure
 typedef struct
 {
 	uint8_t battery;
@@ -173,24 +173,26 @@ K_SEM_DEFINE(bmi270_isr_sem, 0, 20);
 /* -------------------- Timers for hearbeat check -------------------- */
 
 // Timers for Periodic Tasks
-static struct k_timer heartbeat_timeout_timer; // For away detection
 static struct k_timer battery_timer;		   // For periodic battery reading
+static struct k_timer sync_check_timer;		   // For scan open
+static struct k_timer scan_close_timer;		   // For scan close
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 1000								  // Read environment at 1 Hz
-#define BATTERY_READ_INTERVAL K_MINUTES(15)						  // Every 15 minute read one battery voltage
-#define HEARTBEAT_TIMEOUT K_SECONDS(90)							  // If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 32									  // BLE advertise interval 32*0.625 ms
-#define BLE_ADV_INTERVAL_MAX 33									  // BLE advertise interval
-#define SENSOR_DATA_PACKET_SIZE 20								  // Size of the sensor data
-#define NONCE_LEN 8												  // Size of the encryption nonce
-#define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE) // Size of the packet data
-#define SCAN_INTERVAL K_MINUTES(1)								  // BLE scan interval, start scan every 1 minute
-#define SCAN_WINDOW K_SECONDS(5)								  // BLE scan window, when started, scan for 5 seconds
-#define PRESSURE_BASE_HPA_X10 8500								  // Base offset in hPa x 10
-#define TEMPERATURE_LOW_LIMIT 30								  // -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT 40								  // +40 degree as the highest temperature of interest
+#define BMP390_READ_INTERVAL 1000									  // Read environment at 1 Hz
+#define BATTERY_READ_INTERVAL K_MINUTES(15)							  // Every 15 minute read one battery voltage
+#define HEARTBEAT_TIMEOUT K_MINUTES(5)								  // If no heartbeat for 90s, assume away
+#define BLE_ADV_INTERVAL_MIN 32										  // BLE advertise interval 32*0.625 ms
+#define BLE_ADV_INTERVAL_MAX 33										  // BLE advertise interval
+#define SENSOR_ADV_PAYLOAD_TYPE	0x00
+#define SYNC_REQ_ADV_PAYLOAD_TYPE	0x01
+#define SENSOR_DATA_PACKET_SIZE 20									  // Size of the sensor data
+#define NONCE_LEN 8													  // Size of the encryption nonce
+#define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE + 1) // Size of the packet data
+#define SYNC_REQ_PAYLOAD_LEN	(1 + 2)
+#define PRESSURE_BASE_HPA_X10 8500									  // Base offset in hPa x 10
+#define TEMPERATURE_LOW_LIMIT 30									  // -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT 40									  // +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
@@ -200,6 +202,15 @@ static struct k_timer battery_timer;		   // For periodic battery reading
 USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00"); // Define the USB MSC LUN
 
 /* -------------------- BLE Legacy Configurations -------------------- */
+
+#define SYNC_CHECK_INTERVAL_BASE_MS	2 * 60 * 1000
+#define SYNC_REQ_ADV_BURST_DURATION K_MSEC(250) // Duration to send advertisment
+#define X_ANNOUNCED_S 3					// Fixed time (seconds) announced until the next scan
+#define MISSES_BEFORE_AWAY 3
+#define AWAY_BACKOFF_MAX_INTERVAL_MS	2 * 60 * 1000
+#define EARLY_MARGIN_MS	1000
+#define LATE_MARGIN_MS	1000
+#define SYNC_SCAN_WINDOW_MS	(EARLY_MARGIN_MS + LATE_MARGIN_MS)
 
 // Define BLE packet structure - Not used in real BLE packet
 typedef struct
@@ -213,17 +224,14 @@ typedef struct
 
 // Buffer for dynamic manufacturer data in advertisement
 static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
-static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN];
-
-// Advertising data structure (hold device name and adv type)
-#define DEVICE_NAME 		CONFIG_BT_DEVICE_NAME		// Use the name defined in Kconfig
-#define DEVICE_NAME_LEN 	(sizeof(DEVICE_NAME) - 1)
+static uint8_t manuf_payload_sensor[ENC_ADV_PAYLOAD_LEN];
+static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN]; 
 
 /**
  * If enable BT_LE_ADV_OPT_SCANNABLE, then pass sd as scan response data
  * 	- Benifit: Scanner will see the name and flag of adv event, we are scannable undirected adv
- * 	- Lose: Double radio on time so consume more power 
- * 
+ * 	- Lose: Double radio on time so consume more power
+ *
  * If not enable BT_LE_ADV_OPT_SCANNABLE, then pass null to scan response data
  * 	- Save power as no scan response data is provided, we are non-connectable undirected adv
  * 	- Lose device name and data flag
@@ -232,15 +240,18 @@ static uint8_t manuf_encrypted[ENC_ADV_PAYLOAD_LEN];
 // BLE advertisement parameters
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 	BT_LE_ADV_OPT_USE_IDENTITY, // Use identity MAC for advertisement
-	BLE_ADV_INTERVAL_MIN,																  // Min advertisement interval (min * 0.625)
-	BLE_ADV_INTERVAL_MAX,																  // Max advertisement interval (max * 0.625), add short delay to avoid aliasing
-	NULL																				  // not directed, pass NULL
+	BLE_ADV_INTERVAL_MIN,		// Min advertisement interval (min * 0.625)
+	BLE_ADV_INTERVAL_MAX,		// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
+	NULL						// not directed, pass NULL
 );
 
-// Main adv packet (hold sensor data)
-struct bt_data ad[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_encrypted, sizeof(manuf_encrypted))
-};
+// Type 0x00: Main adv packet (hold encrypted sensor data)
+struct bt_data ad_sensor[] = {
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sensor, sizeof(manuf_payload_sensor))};
+
+// Type 0x01: Back home anouncement (hold next scan time)
+struct bt_data ad_sync_req[] = {
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sync_req, sizeof(manuf_payload_sync_req))};
 
 // BLE scan parameters
 static const struct bt_le_scan_param scan_param = {
@@ -256,7 +267,10 @@ static const char *target_ap_addrs[] = {
 	"AA:BB:CC:DD:EE:FF",
 };
 static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);
-static volatile bool adv_running = false; // Flag indicating adv or not
+
+static atomic_t adv_running_flag = ATOMIC_INIT(0);						 // Use atomic for ISR/thread safe
+static atomic_t current_adv_type = ATOMIC_INIT(SENSOR_ADV_PAYLOAD_TYPE); // Track which type is active
+static volatile bool scan_active = false;
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -334,6 +348,19 @@ static struct fs_mount_t lfs_mount_p = {
 	.mnt_point = LFS_MOUNT_POINT,
 };
 
+/* -------------------- Home Detection -------------------- */
+
+static uint8_t missed_sync_responses = 0;
+static uint32_t sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
+
+/**
+ * @brief Get the current time in milliseconds.
+ */
+static inline uint64_t ms_now(void)
+{
+	return k_uptime_get();
+}
+
 /* -------------------- State Management Functions -------------------- */
 
 /**
@@ -357,31 +384,45 @@ static void set_imu_rate(bool high_rate)
 }
 
 /**
- * @brief Start BLE advertising when enter HOME state
- *
- * This function starts BLE advertising with the specified parameters and data.
- * It will not start if already running.
+ * @brief Setup the BLE scan filter to accept only specific target APs.
  */
-static void start_advertising(void)
+static int setup_scan_filter(void)
 {
 	int ret;
+	bt_addr_le_t addr_le;
 
-	if (adv_running)
-	{
-		return;
-	}
+	// Clearn any previous filter entries
+	bt_le_filter_accept_list_clear();
 
-	ret = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), NULL, 0);
+	LOG_DBG("Populating BLE scan filter accept list:");
+	for (size_t i = 0; i < num_target_aps; i++)
+	{
+		// Convert string address to bt_addr_le_t.
+		// We assume the target APs use public addresses ("public").
+		// If they use Random Static, use "random" or the correct type string.
+		ret = bt_addr_le_from_str(target_ap_addrs[i], "public", &addr_le);
+		if (ret)
+		{
+			LOG_ERR("Invalid address string '%s': %d", target_ap_addrs[i], ret);
+			// Decide how to handle: return error, skip, etc.
+			return ret;
+		}
 
-	if (ret && ret != -EALREADY)
-	{
-		LOG_ERR("Failed to start advertisement: %d", ret);
+		// Add the parsed address to the controller's filter accept list
+		ret = bt_le_filter_accept_list_add(&addr_le);
+		if (ret && ret != -EALREADY)
+		{
+			// Ignore if already added
+			LOG_ERR("Failed to add '%s' to accept list: %d", target_ap_addrs[i], ret);
+			// Decide how to handle: return error, skip, etc.
+			// If one fails, the list might be partially populated.
+		}
+		else if (ret == 0)
+		{
+			LOG_INF("Added %s to filter accept list.", target_ap_addrs[i]);
+		}
 	}
-	else
-	{
-		adv_running = true;
-		LOG_DBG("Advertising started/updated");
-	}
+	return 0;
 }
 
 /**
@@ -391,63 +432,138 @@ static void start_advertising(void)
  */
 static void stop_advertising(void)
 {
-	if (!adv_running)
+	if (!atomic_cas(&adv_running_flag, 1, 0))
 	{
+		// It was already 0, adv not running, nothing to do
 		return;
 	}
 
 	int ret = bt_le_adv_stop();
 
-	if (ret == 0 || ret == -EALREADY)
+	if (ret == 0)
 	{
-		adv_running = false;
 		LOG_DBG("Advertising stopped");
+	}
+	else if (ret == -EALREADY)
+	{
+		LOG_DBG("Advertising already stopped");
+		atomic_set(&adv_running_flag, 0); // Ensure the flag is consistent
+	}
+	else if (ret == -ECONNRESET)
+	{
+		LOG_WRN("Failed to stop advertisement, radio was reset recently: %d", ret);
 	}
 	else
 	{
 		LOG_ERR("Failed to stop advertisement: %d", ret);
+		atomic_set(&adv_running_flag, 1);
 	}
 }
 
 /**
- * @brief Populates the BLE filter accept list with target AP addresses.
+ * @brief Start BLE advertising when enter HOME state
  *
- * Clears the existing list and adds addresses from the global target_ap_addrs array.
- * Assumes target APs use public addresses.
- *
- * @return 0 on success, negative error code on failure.
+ * This function starts BLE advertising with the specified parameters and data.
+ * It will not start if already running.
  */
-static int setup_scan_filter(void)
+static void start_sensor_advertising(void)
 {
-	int err;
-	bt_addr_le_t addr_le;
+	int ret;
 
-	// Clear any previous filter entries (important if list could change)
-	bt_le_filter_accept_list_clear();
+	// Ensure other type of adv is stopped first
+	stop_advertising();
+	k_sleep(K_MSEC(50));
 
-	LOG_INF("Populating BLE scan filter accept list:");
-	for (size_t i = 0; i < num_target_aps; i++) {
-		// Convert string address to bt_addr_le_t.
-		// We assume the target APs use public addresses ("public").
-		// If they use Random Static, use "random" or the correct type string.
-		err = bt_addr_le_from_str(target_ap_addrs[i], "public", &addr_le);
-		if (err) {
-			LOG_ERR("Invalid address string '%s': %d", target_ap_addrs[i], err);
-			// Decide how to handle: return error, skip, etc.
-			return err;
-		}
-
-		// Add the parsed address to the controller's filter accept list
-		err = bt_le_filter_accept_list_add(&addr_le);
-		if (err && err != -EALREADY) { // Ignore if already added
-			LOG_ERR("Failed to add '%s' to accept list: %d", target_ap_addrs[i], err);
-			// Decide how to handle: return error, skip, etc.
-			// If one fails, the list might be partially populated.
-		} else if (err == 0) {
-			LOG_INF("Added %s to filter accept list.", target_ap_addrs[i]);
-		}
+	// Check if already running
+	if (atomic_get(&adv_running_flag))
+	{
+		LOG_WRN("Attempted to start sensor ADV, but ADV is already running");
+		return;
 	}
-	return 0; // Success
+
+	LOG_DBG("Starting Sensor Data advertising (Type 0x00)");
+	ret = bt_le_adv_start(adv_param, ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
+
+	if (ret && ret != -EALREADY)
+	{
+		LOG_ERR("Failed to start sensor advertisement: %d", ret);
+		atomic_set(&adv_running_flag, 0);
+	}
+	else if (ret == -EALREADY)
+	{
+		LOG_WRN("Sensor ADV already started");
+	}
+	else
+	{
+		atomic_set(&adv_running_flag, 1);
+		atomic_set(&current_adv_type, SENSOR_ADV_PAYLOAD_TYPE);
+		LOG_DBG("Advertising started/updated");
+	}
+}
+
+/**
+ * @brief Start away advertisement burst.
+ *
+ * This function starts a BLE advertisement burst for the AWAY state.
+ * It will not start if already running.
+ */
+static void start_sync_request_advertising(void)
+{
+	int ret;
+
+	// Ensure other type is stopped first
+	stop_advertising();
+	k_sleep(K_MSEC(50));
+
+	if (atomic_get(&adv_running_flag))
+	{
+		LOG_WRN("Attempted to start SYNC REQ ADV, but ADV is already running");
+		return;
+	}
+
+	LOG_DBG("Starting AWAY Scan Announcement advertising burst (Type 0x01)");
+
+	ret = bt_le_adv_start(adv_param, ad_sync_req, ARRAY_SIZE(ad_sync_req), NULL, 0);
+	if (ret && ret != -EALREADY)
+	{
+		LOG_ERR("Failed to start AWAY Scan Announce advertisement: %d", ret);
+		atomic_set(&adv_running_flag, 0);
+	}
+	else if (ret == -EALREADY)
+	{
+		LOG_WRN("AWAY ADV already started");
+	}
+	else
+	{
+		LOG_DBG("AWAY Scan Announce advertising burst started");
+		atomic_set(&adv_running_flag, 1);
+		atomic_set(&current_adv_type, SYNC_REQ_ADV_PAYLOAD_TYPE);
+	}
+}
+
+static void sync_adv_stop_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
+	{
+		stop_advertising();
+	}
+}
+
+static void sync_scan_trigger_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	device_state_t state = atomic_get(&current_state); 
+
+	if (state == STATE_AWAY_LOGGING || STATE_HOME_ADVERTISING)
+	{
+		LOG_DBG("Sync Scan Triggers: Submitting scan_open_work");
+		k_work_submit(&scan_open_work);
+	} else 
+	{
+		LOG_WRN("Sync Scan Trigger ran but state is %d", state); 
+	}
+	
 }
 
 /**
@@ -475,44 +591,135 @@ static void enter_state(device_state_t new_state)
 	// Actions on EXITING the old state
 	switch (old_state)
 	{
-		case STATE_HOME_ADVERTISING:
-			k_timer_stop(&heartbeat_timeout_timer); // stops checking for loss of AP
-			break;
-		case STATE_AWAY_LOGGING:
-			break;
-		case STATE_CHARGING:
-			// Actions for stopping charging are handled by USB disconnect callback
-			break;
-		default: // STATE_INIT or others
-			break;
+	case STATE_HOME_ADVERTISING:
+		LOG_DBG("Exiting HOME: Stopping sensor ADV timer and radio.");
+		stop_advertising();
+		k_timer_stop(&sync_check_timer);
+		k_timer_stop(&scan_close_timer);
+		if (scan_active)
+		{
+			bt_le_scan_stop();
+			scan_active = false;
+		}
+		break;
+	case STATE_AWAY_LOGGING:
+		LOG_DBG("Exiting AWAY: Stopping AWAY ADV timer, work, and radio.");
+
+		k_timer_stop(&sync_check_timer);
+		(void)k_work_cancel_delayable(&sync_adv_stop_work);
+		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
+		stop_advertising();
+		k_timer_stop(&scan_close_timer);
+		if (scan_active)
+		{
+			bt_le_scan_stop();
+			scan_active = false;
+		}
+		break;
+	case STATE_CHARGING:
+		LOG_DBG("Exiting CHARGING.");
+		break;
+	default: // STATE_INIT or others
+		break;
 	}
 
 	// Actions on ENTERING the new state
 	switch (new_state)
 	{
-		case STATE_HOME_ADVERTISING:
-			LOG_INF("Entering Home Adv Mode");
-			set_imu_rate(true);													   // Set high IMU rate and performance mode
-			start_advertising();												   // Start BLE advertisement
-			k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT); // Start timer to track in-home
-			break;
-		case STATE_AWAY_LOGGING:
-			LOG_INF("Entering Away Log Mode");
-			set_imu_rate(false); // Set low IMU rate and low-power mode
-			stop_advertising();	 // Stop advertising
-			// Heartbeat timer should be stopped already from leaving HOME
-			break;
-		case STATE_CHARGING:
-			// Ensure other activities are stopped
-			LOG_INF("Entering Charging Mode");
-			stop_advertising();
-			k_timer_stop(&heartbeat_timeout_timer);
-			break;
-		case STATE_INIT:
-			stop_advertising();
-			break;
-		default:
-			break;
+	case STATE_HOME_ADVERTISING:
+		LOG_INF("Entering Home Adv Mode");
+		set_imu_rate(true);													   // Set high IMU rate and performance mode
+		missed_sync_responses = 0; 
+		sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS; 
+		start_sensor_advertising();											   // Start BLE advertisement
+		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); // Start timer to track in-home
+		break;
+	case STATE_AWAY_LOGGING:
+		LOG_INF("Entering Away Log Mode");
+		set_imu_rate(false); // Set low IMU rate and low-power mode
+		stop_advertising();	 // Stop advertising
+		uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4); 
+		k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(sync_check_interval_ms));
+		break;
+	case STATE_CHARGING:
+		// Ensure other activities are stopped
+		LOG_INF("Entering Charging Mode");
+		stop_advertising();
+		k_timer_stop(&sync_check_timer);
+		(void)k_work_cancel_delayable(&sync_adv_stop_work);
+		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
+		if (scan_active)
+		{
+			LOG_DBG("Stopped active scan on entering CHARGING state");
+			bt_le_scan_stop();
+			scan_active = false;
+		}
+		k_timer_stop(&scan_close_timer);
+		break;
+	case STATE_INIT:
+		LOG_INF("Entering INIT state.");
+		stop_advertising();
+		if (scan_active)
+		{
+			bt_le_scan_stop();
+			scan_active = false;
+		}
+		k_timer_stop(&scan_close_timer);
+		k_timer_stop(&sync_check_timer);
+		break;
+	}
+}
+
+/**
+ * @brief Callback function for BLE scanning.
+ *
+ * This function is called when a BLE advertisement is received. It checks if
+ * the advertisement is from a target AP and submits the scan found AP work
+ * to the workqueue.
+ *
+ * @param addr Pointer to the Bluetooth address of the advertiser.
+ * @param rssi Received signal strength indicator.
+ * @param adv_type Advertisement type.
+ * @param buf Pointer to the advertisement data buffer.
+ */
+/* ------------------------------------------------------------------ */
+static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
+					struct net_buf_simple *buf)
+{
+	if (atomic_get(&current_state) == STATE_CHARGING)
+	{
+		/* ignore all packets while charging */
+		return;
+	}
+
+	char addr_str[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
+	LOG_INF("Heartbeat from %s, RSSI=%d", addr_str, rssi);
+
+	// Stop scan and close timer 
+	if (scan_active)
+	{
+		bt_le_scan_stop();
+		scan_active = false;
+	}
+	k_timer_stop(&scan_close_timer);
+
+	// Reset miss counter
+	missed_sync_responses = 0;
+	sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
+
+	// Handle state 
+	device_state_t s = atomic_get(&current_state);
+
+	if (s == STATE_AWAY_LOGGING)
+	{
+		LOG_DBG("Sync Response Received: Transitioning to HOME state.");
+		enter_state(STATE_HOME_ADVERTISING); 
+	}
+	else if (s == STATE_HOME_ADVERTISING)
+	{
+		LOG_DBG("Sync Response Received: Confirmed HOME state.");
+		start_sensor_advertising(); 
 	}
 }
 
@@ -544,6 +751,146 @@ static void queue_initial_battery_level(void)
 	else
 	{
 		LOG_INF("Step 4.2: Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
+	}
+}
+
+/**
+ * @brief Handle the away advertisement work item.
+ *
+ * This function is called when the away advertisement work item is triggered.
+ * It prepares the advertisement payload and starts the AWAY advertisement burst.
+ *
+ * @param work Pointer to the work structure.
+ */
+static void sync_check_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	device_state_t state = atomic_get(&current_state); 
+	// Only proceed if we are actually in AWAY state
+	if (state != STATE_AWAY_LOGGING && state != STATE_HOME_ADVERTISING)
+	{
+		LOG_WRN("Sync check work ran in unexpected state %d", state);
+		return;
+	}
+
+	// Calculate the time until next scan window opens
+	uint16_t time_to_announce_s = X_ANNOUNCED_S;
+	LOG_DBG("Preparing Type 0x01 ADV. Announcing scan reference time: %u seconds", time_to_announce_s);
+
+	// Prepare payload: [ Type | Time LSB | MSB ]
+	manuf_payload_sync_req[0] = SYNC_REQ_ADV_PAYLOAD_TYPE;
+	sys_put_le16(time_to_announce_s, &manuf_payload_sync_req[1]);
+
+	start_sync_request_advertising(); 
+
+	if (atomic_get(&adv_running_flag))
+	{
+		k_work_schedule(&sync_adv_stop_work, SYNC_REQ_ADV_BURST_DURATION);
+
+		int32_t scan_trigger_delay_ms = (time_to_announce_s * 1000) - EARLY_MARGIN_MS;
+		if (scan_trigger_delay_ms < 0)
+		{
+			scan_trigger_delay_ms = 0;
+		}
+		LOG_DBG("Scheduling scan trigger work in %d ms.", scan_trigger_delay_ms);
+
+		int ret = k_work_schedule(&sync_scan_trigger_work, K_MSEC(scan_trigger_delay_ms));
+		if (ret < 0)
+		{
+			LOG_ERR("Failed to schedule away scan trigger work (%d)", ret);
+		}
+	} else 
+	{
+		LOG_ERR("Sync Req ADV failed to start, scan not scheduled"); 
+	}
+}
+
+/**
+ * @brief Handle the scan open work item.
+ *
+ * This function is called when the scan open work item is triggered. It starts
+ * the BLE scan and stops advertising if necessary.
+ *
+ * @param w Pointer to the work structure.
+ */
+static void scan_open_work_handler(struct k_work *w)
+{	
+	ARG_UNUSED(w);
+
+	// Stop any advertising before scanning
+	if (atomic_get(&adv_running_flag))
+	{
+		bt_le_adv_stop();
+		atomic_set(&adv_running_flag, 0);
+	}
+
+	LOG_DBG("Scan Open Work: Starting scan (State: %d)", (int)atomic_get(&current_state)); 
+	int err = bt_le_scan_start(&scan_param, scan_cb);
+	if (err && err != -EALREADY)
+	{
+		LOG_ERR("bt_le_scan_start failed (%d)", err);
+		atomic_set(&adv_running_flag, 0);
+		return;
+	}
+	scan_active = true;
+
+	k_timer_start(&scan_close_timer, K_MSEC(SYNC_SCAN_WINDOW_MS), K_NO_WAIT);
+	LOG_DBG("Scan Open: Scan started (%d ms window).", SYNC_SCAN_WINDOW_MS);
+}
+
+/**
+ * @brief Handle the scan close work item.
+ *
+ * This function is called when the scan close work item is triggered. It stops
+ * the BLE scan and restarts advertising if necessary.
+ *
+ * @param w Pointer to the work structure.
+ */
+static void scan_close_work_handler(struct k_work *w)
+{
+	ARG_UNUSED(w);
+
+	if (scan_active)
+	{
+		bt_le_scan_stop();
+		scan_active = false;
+	}
+	LOG_DBG("Scan Close Work: Scan window finished (AP Response MISSING).");
+
+	device_state_t state = atomic_get(&current_state);
+
+	if (state == STATE_HOME_ADVERTISING)
+	{
+		missed_sync_responses ++; 
+		LOG_WRN("Sync Response Missed (%u/%u) while HOME", missed_sync_responses, MISSES_BEFORE_AWAY); 
+		
+		if (missed_sync_responses >= MISSES_BEFORE_AWAY)
+		{
+			LOG_WRN("Missed %u consecutive Sync Responses, entering AWAY", MISSES_BEFORE_AWAY);
+			enter_state(STATE_AWAY_LOGGING);
+		} else
+		{
+			if (!atomic_get(&adv_running_flag))
+			{
+				LOG_DBG("Scan Close (HOME miss): Restarting sensor advertising");
+				start_sensor_advertising();
+			}
+		}
+	} else if (state == STATE_AWAY_LOGGING)
+	{
+		LOG_WRN("Sync Response MISSED while AWAY");
+		sync_check_interval_ms = MIN(sync_check_interval_ms * 2, AWAY_BACKOFF_MAX_INTERVAL_MS);
+		sync_check_interval_ms += sys_rand32_get() * (SYNC_CHECK_INTERVAL_BASE_MS / 2);
+		sync_check_interval_ms = MIN(sync_check_interval_ms, AWAY_BACKOFF_MAX_INTERVAL_MS);
+
+		LOG_INF("AWAY Backoff: Next sync check attempt in %u ms", sync_check_interval_ms);
+		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); 
+
+		if (atomic_get(&adv_running_flag))
+		{
+			stop_advertising();
+		}
 	}
 }
 
@@ -580,29 +927,6 @@ static void battery_timeout_work_handler(struct k_work *work)
 }
 
 /**
- * @brief Handle heartbeat timeout events.
- *
- * This function is called when the heartbeat timer expires. It transitions the
- * device to the AWAY state if the current state is HOME.
- *
- * @param work Pointer to the work structure.
- */
-static void heartbeat_timeout_work_handler(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	LOG_DBG("Workqueue: Heartbeat timeout expired, entering AWAY");
-
-	if (atomic_get(&current_state) == STATE_HOME_ADVERTISING)
-	{
-		enter_state(STATE_AWAY_LOGGING);
-	}
-	else
-	{
-		LOG_WRN("Workqueue: Heartbeat timeout work ran, but state was not HOME: %d", (int)atomic_get(&current_state));
-	}
-}
-
-/**
  * @brief Handle USB connection events.
  *
  * This function is called when the USB is connected. It transitions the device
@@ -634,8 +958,14 @@ static void usb_disconnect_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 	LOG_DBG("Workqueue: USB disconnected, entering HOME");
 
-	if (atomic_get(&current_state) != STATE_HOME_ADVERTISING)
+	if (atomic_get(&current_state) == STATE_CHARGING)
+	{	
+		LOG_DBG("Workqueue: USB Disconnected, entering AWAY state to initiate sync check"); 
+		enter_state(STATE_HOME_ADVERTISING);
+	}
+	else
 	{
+		LOG_WRN("USB disconnect event when not in CHARGING state (%d). Forcing AWAY state.", (int)atomic_get(&current_state));
 		enter_state(STATE_HOME_ADVERTISING);
 	}
 }
@@ -651,17 +981,48 @@ static void usb_disconnect_work_handler(struct k_work *work)
 static void scan_found_ap_work_handler(struct k_work *k_work)
 {
 	ARG_UNUSED(k_work);
+
+	if (atomic_get(&current_state) == STATE_CHARGING)
+	{
+		LOG_DBG("Workqueue: Scan found AP, but in CHARGING state");
+		return;
+	}
+
 	LOG_DBG("Workqueue: Scan found AP, entering HOME");
 
 	if (atomic_get(&current_state) != STATE_HOME_ADVERTISING)
 	{
+		LOG_INF("Workqueue: Scan found AP -> Entering HOME state.");
 		enter_state(STATE_HOME_ADVERTISING);
 	}
 	else
 	{
-		LOG_DBG("Workqueue: In HOME, restart timer");
-		k_timer_start(&heartbeat_timeout_timer, HEARTBEAT_TIMEOUT, K_NO_WAIT);
+		LOG_DBG("Workqueue: Scan found AP while already HOME.");
 	}
+}
+
+static void sync_check_timer_expiry(struct k_timer *timer_id)
+{
+	ARG_UNUSED(timer_id);
+	device_state_t state = atomic_get(&current_state); 
+	if (state == STATE_AWAY_LOGGING || state == STATE_HOME_ADVERTISING)
+	{
+		k_work_submit(&sync_check_work);
+	}
+}
+
+/**
+ * @brief Handle the scan close timer expiry event.
+ *
+ * This function is called when the scan close timer expires. It submits the
+ * scan close work to the workqueue.
+ *
+ * @param t Pointer to the timer structure.
+ */
+static void scan_close_timer_expiry(struct k_timer *t)
+{
+	ARG_UNUSED(t);
+	k_work_submit(&scan_close_work);
 }
 
 /**
@@ -694,20 +1055,6 @@ void battery_timer_expiry(struct k_timer *timer_id)
 }
 
 /**
- * @brief Handle heartbeat timer expiry events.
- *
- * This function is called when the heartbeat timer expires. It submits the
- * heartbeat timeout work to the workqueue.
- *
- * @param timer_id Pointer to the timer structure.
- */
-void heartbeat_timeout_expiry(struct k_timer *timer_id)
-{
-	LOG_DBG("Heartbeat timer expired, submitting work");
-	k_work_submit(&heartbeat_timeout_work);
-}
-
-/**
  * @brief Feed the watchdog timer to prevent timeout.
  *
  * This function is called periodically to feed the watchdog timer and prevent
@@ -719,33 +1066,6 @@ static void watchdog_feed(struct k_timer *timer_id)
 {
 	const struct device *dev = (const struct device *)k_timer_user_data_get(timer_id);
 	wdt_feed(dev, wdt_channel_id);
-}
-
-/**
- * @brief Callback function for BLE scanning.
- *
- * This function is called when a BLE advertisement is received. It checks if
- * the advertisement is from a target AP and submits the scan found AP work
- * to the workqueue.
- *
- * @param addr Pointer to the Bluetooth address of the advertiser.
- * @param rssi Received signal strength indicator.
- * @param adv_type Advertisement type.
- * @param buf Pointer to the advertisement data buffer.
- */
-static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type, struct net_buf_simple *buf)
-{
-	char addr_str[BT_ADDR_LE_STR_LEN];
-	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
-
-	// Filter accept list ensures this callback only runs for target APs.
-	// No manual strcmp needed anymore.
-	LOG_INF("Heartbeat received from filtered AP (%s), RSSI: %d", addr_str, rssi);
-
-	// Submit to work item for state transition
-	k_work_submit(&scan_found_ap_work);
-
-	LOG_HEXDUMP_DBG(buf->data, buf->len, "Adv Data: ");
 }
 
 /**
@@ -766,7 +1086,7 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 		k_work_submit(&usb_connect_work);
 		break;
 	case USB_DC_DISCONNECTED:
-		LOG_DBG("USB Disconnected - Entering Home state");
+		LOG_DBG("USB Disconnected");
 		k_work_submit(&usb_disconnect_work);
 		break;
 	case USB_DC_CONFIGURED:
@@ -1023,6 +1343,8 @@ SETTINGS_STATIC_HANDLER_DEFINE(
  */
 static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 {
+	memset(out, 0, ENC_ADV_PAYLOAD_LEN);
+
 	if (g_aes_key_id == PSA_KEY_ID_NULL)
 	{
 		LOG_ERR("AES key handle is not valid");
@@ -1067,12 +1389,14 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 		goto cleanup_op; // Abort the operation
 	}
 
+	out[0] = SENSOR_ADV_PAYLOAD_TYPE;
+
 	// --- Copy the actual 8-byte nonce to the output buffer ---
-	memcpy(out, nonce, NONCE_LEN);
+	memcpy(&out[1], nonce, NONCE_LEN);
 
 	// Encrypt data, placing ciphertext *after* the nonce space in 'out'
 	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
-						   out + NONCE_LEN,			// Output buffer starts after nonce
+						   &out[1 + NONCE_LEN],		// Output buffer starts after nonce + type
 						   SENSOR_DATA_PACKET_SIZE, // Max capacity for ciphertext
 						   &olen);
 	if (st != PSA_SUCCESS)
@@ -1084,19 +1408,23 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	ciphertext_len += olen;
 
 	// Finish the operation (usually produces no more output for CTR)
-	st = psa_cipher_finish(&op,
-						   out + NONCE_LEN + ciphertext_len,		 // Where to write if any
-						   SENSOR_DATA_PACKET_SIZE - ciphertext_len, // Remaining capacity
-						   &olen);
-	if (st != PSA_SUCCESS)
+	if (ciphertext_len < SENSOR_DATA_PACKET_SIZE)
 	{
-		LOG_ERR("Failed to finish cipher op: %d", st);
-		ret = -EFAULT;
-		goto cleanup_op;
-	}
-	ciphertext_len += olen;
+		st = psa_cipher_finish(&op,
+							   out + 1 + NONCE_LEN + ciphertext_len,	 // Where to write if any
+							   SENSOR_DATA_PACKET_SIZE - ciphertext_len, // Remaining capacity
+							   &olen);
 
-	// Now 'out' contains [ 8-byte nonce | 20-byte ciphertext ]
+		if (st != PSA_SUCCESS)
+		{
+			LOG_ERR("Failed to finish cipher op: %d", st);
+			ret = -EFAULT;
+			goto cleanup_op;
+		}
+
+		ciphertext_len += olen;
+	}
+	// Now 'out' contains [ 1 byte type | 8-byte nonce | 20-byte ciphertext ]
 
 	// --- Verification ---
 	if (ciphertext_len != SENSOR_DATA_PACKET_SIZE)
@@ -1223,7 +1551,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				prepare_packet(&current_sensor_state, manuf_plain, sizeof(manuf_plain));
 
 				// Encrypt to 31-byte buffer
-				ret = encrypt_sensor_block(manuf_plain, manuf_encrypted);
+				ret = encrypt_sensor_block(manuf_plain, manuf_payload_sensor);
 				if (ret != 0)
 				{
 					LOG_ERR("Encrypt failed - ADV not updated: %d", ret);
@@ -1232,11 +1560,14 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 					continue;
 				}
 
-				// Update the advertising data (non-blocking)
-				ret = bt_le_adv_update_data(ad, ARRAY_SIZE(ad), NULL, 0);
-				if (ret && ret != -EALREADY)
+				if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE)
 				{
-					LOG_WRN("Failed to update ADV data: %d", ret);
+					// Update the advertising data (non-blocking)
+					ret = bt_le_adv_update_data(ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
+					if (ret && ret != -EALREADY)
+					{
+						LOG_WRN("Failed to update ADV data: %d", ret);
+					}
 				}
 
 				if (k_uptime_get_32() - save_timer > NONCE_SAVE_INTERVAL)
@@ -1322,8 +1653,8 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 							// Sync periodically to flush cache to flash (e.g., every 1000 records)
 							// Adjust based on data rate and acceptable data loss on power failure
-							LOG_DBG("Logged IMU data (%d bytes), write count: %d",
-									(int)written, log_write_count);
+							// LOG_DBG("Logged IMU data (%d bytes), write count: %d",
+							// 		(int)written, log_write_count);
 
 							if (log_write_count >= LOG_SYNC_THRESHOLD)
 							{
@@ -1377,68 +1708,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 			state_needs_update = false;
 		}
 		// Loop continues, blocking on k_msgq_get
-	}
-}
-
-/**
- * @brief Scanner thread function.
- *
- * This thread periodically scans for BLE advertisements from target APs and
- * triggers state transitions based on the scan results.
- *
- * @param unused1 Unused parameter.
- * @param unused2 Unused parameter.
- * @param unused3 Unused parameter.
- */
-static void scanner_func(void *unused1, void *unused2, void *unused3)
-{
-	ARG_UNUSED(unused1);
-	ARG_UNUSED(unused2);
-	ARG_UNUSED(unused3);
-
-	LOG_DBG("Scanner thread started");
-
-	while (1)
-	{
-		// Only perform scan logic if not charging
-		if (atomic_get(&current_state) != STATE_CHARGING)
-		{
-			LOG_DBG("Starting heartbeat scan ...");
-
-			// Start scanning (scan_cb will be called for received packets)
-			int ret = bt_le_scan_start(&scan_param, scan_cb);
-			if (ret != 0)
-			{
-				LOG_ERR("Failed to start scanning: %d", ret);
-				// Don't start timeout timer if scan failed
-			}
-			else
-			{
-				// Scan runs for SCAN_WINDOW duration
-				k_sleep(SCAN_WINDOW);
-
-				// Stop scanning
-				ret = bt_le_scan_stop();
-				if (ret && ret != -EALREADY)
-				{
-					LOG_ERR("Failed to stop scan: %d", ret);
-				}
-				LOG_DBG("Scan window finished");
-				// Check the flag set by scan_cb
-				// If we are AWAY and received a heartbeat, scan_cb already triggered state change
-				// If we are HOME and did NOT receive a heartbeat, the heartbeat_timeout_timer will fire
-				// If we are HOME and DID receive a heartbeat, scan_cb restarted the timer
-				// No explicit state change needed here based *only* on the flag after scan stops.
-				// The timer expiry / scan_cb handle the transitions.
-			}
-		}
-		else
-		{
-			LOG_DBG("Skipping scan during CHARGING state");
-		}
-
-		// Wait for the next scan interval regardless of state (unless very low power needed in charge)
-		k_sleep(SCAN_INTERVAL);
 	}
 }
 
@@ -1635,11 +1904,11 @@ int main(void)
 	LOG_INF("Step 6: Bluetooth enabled");
 
 	ret = setup_scan_filter();
-	if (ret) {
+	if (ret)
+	{
 		LOG_ERR("Failed to configure scan filter accept list: %d", ret);
 		return -1;
 	}
-	LOG_INF("Step 6.1: Scan filter accept list configured");
 
 	ret = psa_crypto_init();
 	if (ret != PSA_SUCCESS)
@@ -1711,16 +1980,22 @@ int main(void)
 	}
 
 	// --- Initialise Timers ---
-	k_timer_init(&heartbeat_timeout_timer, (k_timer_expiry_t)heartbeat_timeout_expiry, NULL);
 	k_timer_init(&battery_timer, (k_timer_expiry_t)battery_timer_expiry, NULL);
-	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
+	k_timer_init(&sync_check_timer, sync_check_timer_expiry, NULL);
+	k_timer_init(&scan_close_timer, scan_close_timer_expiry, NULL);
 
 	// Initialise workqueue items
 	k_work_init(&battery_timeout_work, battery_timeout_work_handler);
-	k_work_init(&heartbeat_timeout_work, heartbeat_timeout_work_handler);
 	k_work_init(&usb_connect_work, usb_connect_work_handler);
 	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
 	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
+	k_work_init(&scan_open_work, scan_open_work_handler);
+	k_work_init(&scan_close_work, scan_close_work_handler);
+	k_work_init(&sync_check_work, sync_check_work_handler);						// Init new work
+	k_work_init_delayable(&sync_adv_stop_work, sync_adv_stop_work_handler); // Init new delayable work
+	k_work_init_delayable(&sync_scan_trigger_work, sync_scan_trigger_handler);
+
+	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
 
 	LOG_INF("Step 10: Timers and WQ initialized and Battery timer started");
 
@@ -1780,10 +2055,6 @@ int main(void)
 	k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
 					K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
 					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
-
-	k_thread_create(&scanner_thread_data, scanner_stack_area,
-					K_THREAD_STACK_SIZEOF(scanner_stack_area), scanner_func, NULL, NULL, NULL,
-					SCANNER_THREAD_PRIORITY, 0, K_MSEC(1000));
 
 	// --- Initial State ---
 	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
