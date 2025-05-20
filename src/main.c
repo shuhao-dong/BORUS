@@ -237,17 +237,33 @@ static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN];
  * 	- Lose device name and data flag
  */
 
-// BLE advertisement parameters
-static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
-	BT_LE_ADV_OPT_USE_IDENTITY, // Use identity MAC for advertisement
-	BLE_ADV_INTERVAL_MIN,		// Min advertisement interval (min * 0.625)
-	BLE_ADV_INTERVAL_MAX,		// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
-	NULL						// not directed, pass NULL
-);
+// Legacy BLE advertisement parameters
+static struct bt_le_adv_param adv_param = {
+	.id = 1, 
+	.options = BT_LE_ADV_OPT_USE_IDENTITY,
+	.sid = 1,
+	.interval_max = BT_GAP_ADV_FAST_INT_MAX_2,
+	.interval_min = BT_GAP_ADV_FAST_INT_MIN_2,
+	.peer = NULL,
+};
+
+// Extended BLE advertisement parameters 
+static struct bt_le_adv_param ext_adv_params_sensor = {
+	.id = BT_ID_DEFAULT,
+	.sid = 0,
+	.secondary_max_skip = 0,
+	.options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_USE_IDENTITY),
+	.interval_min = BLE_ADV_INTERVAL_MIN,
+	.interval_max = BLE_ADV_INTERVAL_MAX,
+	.peer = NULL,
+	};
+
+uint8_t dummy_data[200] = {0};
 
 // Type 0x00: Main adv packet (hold encrypted sensor data)
 struct bt_data ad_sensor[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sensor, sizeof(manuf_payload_sensor))};
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sensor, sizeof(manuf_payload_sensor)),
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, dummy_data, sizeof(dummy_data))};
 
 // Type 0x01: Back home anouncement (hold next scan time)
 struct bt_data ad_sync_req[] = {
@@ -271,6 +287,8 @@ static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);
 static atomic_t adv_running_flag = ATOMIC_INIT(0);						 // Use atomic for ISR/thread safe
 static atomic_t current_adv_type = ATOMIC_INIT(SENSOR_ADV_PAYLOAD_TYPE); // Track which type is active
 static volatile bool scan_active = false;
+
+static struct bt_le_ext_adv *g_adv_sensor_ext_handle;
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -363,6 +381,20 @@ static inline uint64_t ms_now(void)
 
 /* -------------------- State Management Functions -------------------- */
 
+static int create_sensor_ext_adv_set(void)
+{
+	int err;
+
+	err = bt_le_ext_adv_create(&ext_adv_params_sensor, NULL, &g_adv_sensor_ext_handle); 
+	if (err)
+	{
+		LOG_ERR("Failed to create sensor extended adv set: %d", err);
+		return err;
+	}
+	LOG_DBG("Sensor extended adv. set created");
+	return 0; 	
+}
+
 /**
  * @brief Set the IMU sampling rate and configuration.
  *
@@ -430,34 +462,56 @@ static int setup_scan_filter(void)
  *
  * This function stops BLE advertising. It will not stop if already stopped.
  */
-static void stop_advertising(void)
+static void stop_all_advertising(void)
 {
-	if (!atomic_cas(&adv_running_flag, 1, 0))
-	{
-		// It was already 0, adv not running, nothing to do
-		return;
+	int ret_legacy = 0;
+	int ret_ext = 0;
+	bool stopped_something = false;
+
+	// Try to stop legacy advertising (which is now only for sync requests)
+	if (atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
+		ret_legacy = bt_le_adv_stop(); // Stop legacy
+		if (ret_legacy == 0) {
+			LOG_DBG("Legacy advertising (sync_req) stopped");
+			stopped_something = true;
+		} else if (ret_legacy == -EALREADY) {
+			LOG_DBG("Legacy advertising (sync_req) already stopped");
+			stopped_something = true; // Effectively stopped from our perspective
+		} else if (ret_legacy == -ECONNRESET) {
+			LOG_WRN("Failed to stop legacy adv (sync_req), radio was reset: %d", ret_legacy);
+		} else {
+			LOG_ERR("Failed to stop legacy adv (sync_req): %d", ret_legacy);
+		}
 	}
 
-	int ret = bt_le_adv_stop();
-
-	if (ret == 0)
-	{
-		LOG_DBG("Advertising stopped");
+	// Try to stop extended sensor advertising
+	if (g_adv_sensor_ext_handle && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
+		ret_ext = bt_le_ext_adv_stop(g_adv_sensor_ext_handle);
+		if (ret_ext == 0) {
+			LOG_DBG("Extended sensor advertising stopped");
+			stopped_something = true;
+		} else if (ret_ext == -EALREADY) {
+			LOG_DBG("Extended sensor advertising already stopped");
+			stopped_something = true;
+		} else if (ret_ext == -ECONNRESET){
+             LOG_WRN("Failed to stop extended adv (sensor), radio was reset: %d", ret_ext);
+        }
+        else if (ret_ext != -EINVAL) { // -EINVAL if handle is invalid
+			LOG_ERR("Failed to stop extended sensor adv: %d", ret_ext);
+		}
 	}
-	else if (ret == -EALREADY)
-	{
-		LOG_DBG("Advertising already stopped");
-		atomic_set(&adv_running_flag, 0); // Ensure the flag is consistent
-	}
-	else if (ret == -ECONNRESET)
-	{
-		LOG_WRN("Failed to stop advertisement, radio was reset recently: %d", ret);
-	}
-	else
-	{
-		LOG_ERR("Failed to stop advertisement: %d", ret);
-		atomic_set(&adv_running_flag, 1);
-	}
+    
+    // If we explicitly stopped something or if adv_running_flag was already 0
+	if (stopped_something || !atomic_get(&adv_running_flag)) {
+		atomic_set(&adv_running_flag, 0);
+		atomic_set(&current_adv_type, 0);
+	} else if (!stopped_something && atomic_get(&adv_running_flag)) {
+        // This case means adv_running_flag was true, but we didn't match any current_adv_type
+        // to stop it. This might indicate a state inconsistency. Reset flags.
+        LOG_WRN("ADV was running but no matching type to stop. Resetting flags.");
+        atomic_set(&adv_running_flag, 0);
+		atomic_set(&current_adv_type, 0);
+    }
 }
 
 /**
@@ -466,38 +520,43 @@ static void stop_advertising(void)
  * This function starts BLE advertising with the specified parameters and data.
  * It will not start if already running.
  */
-static void start_sensor_advertising(void)
+static void start_sensor_advertising_ext(void)
 {
 	int ret;
 
-	// Ensure other type of adv is stopped first
-	stop_advertising();
-	k_sleep(K_MSEC(50));
+	// Ensure legacy (sync_req) advertising is stopped
+	if (atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
+		ret = bt_le_adv_stop();
+		if (ret != 0 && ret != -EALREADY && ret != -ECONNRESET) {
+			LOG_ERR("Failed to stop legacy (sync_req) adv before starting ext sensor adv: %d", ret);
+			// Potentially don't proceed
+		}
+	}
 
-	// Check if already running
-	if (atomic_get(&adv_running_flag))
-	{
-		LOG_WRN("Attempted to start sensor ADV, but ADV is already running");
+	if (!g_adv_sensor_ext_handle) {
+		LOG_ERR("Sensor extended adv handle is NULL. Cannot start.");
 		return;
 	}
 
-	LOG_DBG("Starting Sensor Data advertising (Type 0x00)");
-	ret = bt_le_adv_start(adv_param, ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
+	ret = bt_le_ext_adv_set_data(g_adv_sensor_ext_handle, ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
+	if (ret) {
+		LOG_ERR("Failed to set sensor extended advertising data (err %d)", ret);
+		return;
+	}
 
-	if (ret && ret != -EALREADY)
-	{
-		LOG_ERR("Failed to start sensor advertisement: %d", ret);
+	LOG_DBG("Starting Sensor Data extended advertising (Custom Type 0x%02X)", SENSOR_ADV_PAYLOAD_TYPE);
+	// SENSOR_ADV_PAYLOAD_TYPE is the first byte *inside* manuf_payload_sensor
+	ret = bt_le_ext_adv_start(g_adv_sensor_ext_handle, BT_LE_EXT_ADV_START_DEFAULT);
+
+	if (ret && ret != -EALREADY) {
+		LOG_ERR("Failed to start sensor extended advertisement: %d", ret);
 		atomic_set(&adv_running_flag, 0);
-	}
-	else if (ret == -EALREADY)
-	{
-		LOG_WRN("Sensor ADV already started");
-	}
-	else
-	{
+		atomic_set(&current_adv_type, 2);
+	} else {
 		atomic_set(&adv_running_flag, 1);
-		atomic_set(&current_adv_type, SENSOR_ADV_PAYLOAD_TYPE);
-		LOG_DBG("Advertising started/updated");
+		atomic_set(&current_adv_type, SENSOR_ADV_PAYLOAD_TYPE); // Mark as extended sensor type
+		if (ret == -EALREADY) LOG_DBG("Sensor Ext Adv already started/updated.");
+		else LOG_DBG("Sensor Ext Adv started/updated.");
 	}
 }
 
@@ -512,22 +571,22 @@ static void start_sync_request_advertising(void)
 	int ret;
 
 	// Ensure other type is stopped first
-	stop_advertising();
-	k_sleep(K_MSEC(50));
-
-	if (atomic_get(&adv_running_flag))
-	{
-		LOG_WRN("Attempted to start SYNC REQ ADV, but ADV is already running");
-		return;
+	// Ensure extended (sensor) advertising is stopped
+	if (g_adv_sensor_ext_handle && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
+		ret = bt_le_ext_adv_stop(g_adv_sensor_ext_handle);
+		if (ret != 0 && ret != -EALREADY && ret != -ECONNRESET && ret != -EINVAL) {
+			LOG_ERR("Failed to stop ext (sensor) adv before starting legacy sync_req adv: %d", ret);
+		}
 	}
 
 	LOG_DBG("Starting AWAY Scan Announcement advertising burst (Type 0x01)");
 
-	ret = bt_le_adv_start(adv_param, ad_sync_req, ARRAY_SIZE(ad_sync_req), NULL, 0);
+	ret = bt_le_adv_start(&adv_param, ad_sync_req, ARRAY_SIZE(ad_sync_req), NULL, 0);
 	if (ret && ret != -EALREADY)
 	{
 		LOG_ERR("Failed to start AWAY Scan Announce advertisement: %d", ret);
 		atomic_set(&adv_running_flag, 0);
+		atomic_set(&current_adv_type, 2); 
 	}
 	else if (ret == -EALREADY)
 	{
@@ -546,7 +605,19 @@ static void sync_adv_stop_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
 	{
-		stop_advertising();
+		stop_all_advertising();
+
+		// If we were in HOME state before sync adv, restart sensor ext adv
+        if (atomic_get(&current_state) == STATE_HOME_ADVERTISING) {
+            LOG_DBG("Sync ADV burst finished, restarting sensor EXT adv.");
+            start_sensor_advertising_ext();
+        } else {
+            LOG_DBG("Sync ADV burst finished, not in HOME state, no sensor adv restart.");
+        }
+
+	} else {
+        LOG_WRN("Sync adv stop work ran, but adv not running or not sync type (flag: %d, type: %d)",
+                (int)atomic_get(&adv_running_flag), (int)atomic_get(&current_adv_type));
 	}
 }
 
@@ -593,7 +664,7 @@ static void enter_state(device_state_t new_state)
 	{
 	case STATE_HOME_ADVERTISING:
 		LOG_DBG("Exiting HOME: Stopping sensor ADV timer and radio.");
-		stop_advertising();
+		stop_all_advertising();
 		k_timer_stop(&sync_check_timer);
 		k_timer_stop(&scan_close_timer);
 		if (scan_active)
@@ -608,7 +679,7 @@ static void enter_state(device_state_t new_state)
 		k_timer_stop(&sync_check_timer);
 		(void)k_work_cancel_delayable(&sync_adv_stop_work);
 		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
-		stop_advertising();
+		stop_all_advertising();
 		k_timer_stop(&scan_close_timer);
 		if (scan_active)
 		{
@@ -631,20 +702,20 @@ static void enter_state(device_state_t new_state)
 		set_imu_rate(true);													   // Set high IMU rate and performance mode
 		missed_sync_responses = 0; 
 		sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS; 
-		start_sensor_advertising();											   // Start BLE advertisement
+		start_sensor_advertising_ext();											   // Start BLE advertisement
 		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); // Start timer to track in-home
 		break;
 	case STATE_AWAY_LOGGING:
 		LOG_INF("Entering Away Log Mode");
 		set_imu_rate(false); // Set low IMU rate and low-power mode
-		stop_advertising();	 // Stop advertising
+		stop_all_advertising();	 // Stop advertising
 		uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4); 
 		k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(sync_check_interval_ms));
 		break;
 	case STATE_CHARGING:
 		// Ensure other activities are stopped
 		LOG_INF("Entering Charging Mode");
-		stop_advertising();
+		stop_all_advertising();
 		k_timer_stop(&sync_check_timer);
 		(void)k_work_cancel_delayable(&sync_adv_stop_work);
 		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
@@ -658,7 +729,7 @@ static void enter_state(device_state_t new_state)
 		break;
 	case STATE_INIT:
 		LOG_INF("Entering INIT state.");
-		stop_advertising();
+		stop_all_advertising();
 		if (scan_active)
 		{
 			bt_le_scan_stop();
@@ -719,7 +790,7 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 	else if (s == STATE_HOME_ADVERTISING)
 	{
 		LOG_DBG("Sync Response Received: Confirmed HOME state.");
-		start_sensor_advertising(); 
+		start_sensor_advertising_ext(); 
 	}
 }
 
@@ -784,7 +855,7 @@ static void sync_check_work_handler(struct k_work *work)
 
 	start_sync_request_advertising(); 
 
-	if (atomic_get(&adv_running_flag))
+	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
 	{
 		k_work_schedule(&sync_adv_stop_work, SYNC_REQ_ADV_BURST_DURATION);
 
@@ -821,8 +892,7 @@ static void scan_open_work_handler(struct k_work *w)
 	// Stop any advertising before scanning
 	if (atomic_get(&adv_running_flag))
 	{
-		bt_le_adv_stop();
-		atomic_set(&adv_running_flag, 0);
+		stop_all_advertising(); 
 	}
 
 	LOG_DBG("Scan Open Work: Starting scan (State: %d)", (int)atomic_get(&current_state)); 
@@ -874,7 +944,7 @@ static void scan_close_work_handler(struct k_work *w)
 			if (!atomic_get(&adv_running_flag))
 			{
 				LOG_DBG("Scan Close (HOME miss): Restarting sensor advertising");
-				start_sensor_advertising();
+				start_sensor_advertising_ext();
 			}
 		}
 	} else if (state == STATE_AWAY_LOGGING)
@@ -889,7 +959,7 @@ static void scan_close_work_handler(struct k_work *w)
 
 		if (atomic_get(&adv_running_flag))
 		{
-			stop_advertising();
+			stop_all_advertising();
 		}
 	}
 }
@@ -1563,7 +1633,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE)
 				{
 					// Update the advertising data (non-blocking)
-					ret = bt_le_adv_update_data(ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
+					ret = bt_le_ext_adv_set_data(g_adv_sensor_ext_handle, ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
 					if (ret && ret != -EALREADY)
 					{
 						LOG_WRN("Failed to update ADV data: %d", ret);
@@ -1902,6 +1972,13 @@ int main(void)
 	}
 
 	LOG_INF("Step 6: Bluetooth enabled");
+
+	ret = create_sensor_ext_adv_set();
+	if (ret)
+	{
+		LOG_ERR("Failed to create sensor extended adv set: %d", ret);
+		return -1; 
+	}
 
 	ret = setup_scan_filter();
 	if (ret)
