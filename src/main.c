@@ -99,21 +99,21 @@ static struct k_thread ble_logger_thread_data;
 // Define the state structure
 typedef enum
 {
-	STATE_INIT, // Initial state before normal operation
+	STATE_INIT,				// Initial state before normal operation
 	STATE_HOME_ADVERTISING, // At home, advertise sensor data
 	STATE_AWAY_LOGGING,		// Away, log sensor data
 	STATE_CHARGING			// USB connected
 } device_state_t;
 
-static struct k_work battery_timeout_work;	 // Work item for battery timeout -> Periodic voltage reading
-static struct k_work usb_connect_work;		 // Work item for USB connect -> CHARGING state
-static struct k_work usb_disconnect_work;	 // Work item for USB disconnect -> HOME state (or chosen default)
-static struct k_work scan_found_ap_work;	 // Work item for Scan Found AP -> HOME state
+static struct k_work battery_timeout_work; // Work item for battery timeout -> Periodic voltage reading
+static struct k_work usb_connect_work;	   // Work item for USB connect -> CHARGING state
+static struct k_work usb_disconnect_work;  // Work item for USB disconnect -> HOME state (or chosen default)
+static struct k_work scan_found_ap_work;   // Work item for Scan Found AP -> HOME state
 static struct k_work scan_open_work;
 static struct k_work scan_close_work;
 static struct k_work sync_check_work;
 static struct k_work_delayable sync_adv_stop_work;
-static struct k_work_delayable sync_scan_trigger_work; 
+static struct k_work_delayable sync_scan_trigger_work;
 
 // --- Use atomic type for state changes between threads/ISRs
 static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
@@ -173,26 +173,32 @@ K_SEM_DEFINE(bmi270_isr_sem, 0, 20);
 /* -------------------- Timers for hearbeat check -------------------- */
 
 // Timers for Periodic Tasks
-static struct k_timer battery_timer;		   // For periodic battery reading
-static struct k_timer sync_check_timer;		   // For scan open
-static struct k_timer scan_close_timer;		   // For scan close
+static struct k_timer battery_timer;	// For periodic battery reading
+static struct k_timer sync_check_timer; // For scan open
+static struct k_timer scan_close_timer; // For scan close
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 1000									  // Read environment at 1 Hz
-#define BATTERY_READ_INTERVAL K_MINUTES(15)							  // Every 15 minute read one battery voltage
-#define HEARTBEAT_TIMEOUT K_MINUTES(5)								  // If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 32										  // BLE advertise interval 32*0.625 ms
-#define BLE_ADV_INTERVAL_MAX 33										  // BLE advertise interval
-#define SENSOR_ADV_PAYLOAD_TYPE	0x00
-#define SYNC_REQ_ADV_PAYLOAD_TYPE	0x01
-#define SENSOR_DATA_PACKET_SIZE 20									  // Size of the sensor data
+#define BMP390_READ_INTERVAL 1000			// Read environment at 1 Hz
+#define BATTERY_READ_INTERVAL K_MINUTES(15) // Every 15 minute read one battery voltage
+#define HEARTBEAT_TIMEOUT K_MINUTES(5)		// If no heartbeat for 90s, assume away
+#define BLE_ADV_INTERVAL_MIN 32				// BLE advertise interval 32*0.625 ms
+#define BLE_ADV_INTERVAL_MAX 33				// BLE advertise interval
+#define SENSOR_ADV_PAYLOAD_TYPE 0x00
+#define SYNC_REQ_ADV_PAYLOAD_TYPE 0x01
+
+#define MAX_IMU_SAMPLES_IN_PACKET 14
+#define ADV_PAYLOAD_UPDATE_INTERVAL_MS 140
+
+#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE 233
+#define AGGREGATED_ENC_ADV_PAYLOAD_LEN (1 + NONCE_LEN + AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)
+
 #define NONCE_LEN 8													  // Size of the encryption nonce
-#define ENC_ADV_PAYLOAD_LEN (NONCE_LEN + SENSOR_DATA_PACKET_SIZE + 1) // Size of the packet data
-#define SYNC_REQ_PAYLOAD_LEN	(1 + 2)
-#define PRESSURE_BASE_HPA_X10 8500									  // Base offset in hPa x 10
-#define TEMPERATURE_LOW_LIMIT 30									  // -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT 40									  // +40 degree as the highest temperature of interest
+
+#define SYNC_REQ_PAYLOAD_LEN (1 + 2)
+#define PRESSURE_BASE_HPA_X10 8500 // Base offset in hPa x 10
+#define TEMPERATURE_LOW_LIMIT 30   // -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT 40  // +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
@@ -203,14 +209,14 @@ USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00"); // Define the USB MSC LUN
 
 /* -------------------- BLE Legacy Configurations -------------------- */
 
-#define SYNC_CHECK_INTERVAL_BASE_MS	2 * 60 * 1000
+#define SYNC_CHECK_INTERVAL_BASE_MS 1 * 60 * 1000
 #define SYNC_REQ_ADV_BURST_DURATION K_MSEC(250) // Duration to send advertisment
-#define X_ANNOUNCED_S 3					// Fixed time (seconds) announced until the next scan
+#define X_ANNOUNCED_S 3							// Fixed time (seconds) announced until the next scan
 #define MISSES_BEFORE_AWAY 3
-#define AWAY_BACKOFF_MAX_INTERVAL_MS	2 * 60 * 1000
-#define EARLY_MARGIN_MS	1000
-#define LATE_MARGIN_MS	1000
-#define SYNC_SCAN_WINDOW_MS	(EARLY_MARGIN_MS + LATE_MARGIN_MS)
+#define AWAY_BACKOFF_MAX_INTERVAL_MS 2 * 60 * 1000
+#define EARLY_MARGIN_MS 1000
+#define LATE_MARGIN_MS 1000
+#define SYNC_SCAN_WINDOW_MS (EARLY_MARGIN_MS + LATE_MARGIN_MS)
 
 // Define BLE packet structure - Not used in real BLE packet
 typedef struct
@@ -223,9 +229,9 @@ typedef struct
 } ble_packet_t;
 
 // Buffer for dynamic manufacturer data in advertisement
-static uint8_t manuf_plain[SENSOR_DATA_PACKET_SIZE];
-static uint8_t manuf_payload_sensor[ENC_ADV_PAYLOAD_LEN];
-static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN]; 
+static uint8_t manuf_plain_aggregated[AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE];
+static uint8_t manuf_payload_sensor_aggregated[AGGREGATED_ENC_ADV_PAYLOAD_LEN];
+static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN];
 
 /**
  * If enable BT_LE_ADV_OPT_SCANNABLE, then pass sd as scan response data
@@ -238,32 +244,27 @@ static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN];
  */
 
 // Legacy BLE advertisement parameters
-static struct bt_le_adv_param adv_param = {
-	.id = 1, 
-	.options = BT_LE_ADV_OPT_USE_IDENTITY,
-	.sid = 1,
-	.interval_max = BT_GAP_ADV_FAST_INT_MAX_2,
-	.interval_min = BT_GAP_ADV_FAST_INT_MIN_2,
-	.peer = NULL,
-};
+static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
+	BT_LE_ADV_OPT_USE_IDENTITY, 	// Use identity MAC for advertisement
+	BT_GAP_ADV_FAST_INT_MIN_2,		// Min advertisement interval (min * 0.625)
+	BT_GAP_ADV_FAST_INT_MAX_2,		// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
+	NULL							// not directed, pass NULL
+);
 
-// Extended BLE advertisement parameters 
+// Extended BLE advertisement parameters
 static struct bt_le_adv_param ext_adv_params_sensor = {
 	.id = BT_ID_DEFAULT,
 	.sid = 0,
 	.secondary_max_skip = 0,
 	.options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_USE_IDENTITY),
-	.interval_min = BLE_ADV_INTERVAL_MIN,
-	.interval_max = BLE_ADV_INTERVAL_MAX,
+	.interval_min = BT_GAP_ADV_FAST_INT_MIN_2,
+	.interval_max = BT_GAP_ADV_FAST_INT_MAX_2,
 	.peer = NULL,
-	};
-
-uint8_t dummy_data[200] = {0};
+};
 
 // Type 0x00: Main adv packet (hold encrypted sensor data)
-struct bt_data ad_sensor[] = {
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sensor, sizeof(manuf_payload_sensor)),
-	BT_DATA(BT_DATA_MANUFACTURER_DATA, dummy_data, sizeof(dummy_data))};
+struct bt_data ad_sensor_agg[] = {
+	BT_DATA(BT_DATA_MANUFACTURER_DATA, manuf_payload_sensor_aggregated, sizeof(manuf_payload_sensor_aggregated))};
 
 // Type 0x01: Back home anouncement (hold next scan time)
 struct bt_data ad_sync_req[] = {
@@ -299,7 +300,7 @@ static struct bt_le_ext_adv *g_adv_sensor_ext_handle;
 
 bmi270_acc_config_t bmi270_acc_config_high = {
 	.acc_bwp = BMI270_ACC_BWP_NORM_AVG4,
-	.acc_odr = BMI270_ACC_ODR_50,
+	.acc_odr = BMI270_ACC_ODR_100,
 	.acc_range = BMI270_ACC_RANGE_8G,
 	.low_power_enable = 1,
 };
@@ -311,7 +312,7 @@ bmi270_acc_config_t bmi270_acc_config_low = {
 };
 bmi270_gyr_config_t bmi270_gyr_config_high = {
 	.gyr_bwp = BMI270_GYR_BWP_NORM,
-	.gyr_odr = BMI270_GYR_ODR_50,
+	.gyr_odr = BMI270_GYR_ODR_100,
 	.gyr_range = BMI270_GYR_RANGE_500,
 	.low_power_enable = 0,
 };
@@ -385,14 +386,14 @@ static int create_sensor_ext_adv_set(void)
 {
 	int err;
 
-	err = bt_le_ext_adv_create(&ext_adv_params_sensor, NULL, &g_adv_sensor_ext_handle); 
+	err = bt_le_ext_adv_create(&ext_adv_params_sensor, NULL, &g_adv_sensor_ext_handle);
 	if (err)
 	{
 		LOG_ERR("Failed to create sensor extended adv set: %d", err);
 		return err;
 	}
 	LOG_DBG("Sensor extended adv. set created");
-	return 0; 	
+	return 0;
 }
 
 /**
@@ -469,49 +470,67 @@ static void stop_all_advertising(void)
 	bool stopped_something = false;
 
 	// Try to stop legacy advertising (which is now only for sync requests)
-	if (atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
+	if (atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag))
+	{
 		ret_legacy = bt_le_adv_stop(); // Stop legacy
-		if (ret_legacy == 0) {
+		if (ret_legacy == 0)
+		{
 			LOG_DBG("Legacy advertising (sync_req) stopped");
 			stopped_something = true;
-		} else if (ret_legacy == -EALREADY) {
+		}
+		else if (ret_legacy == -EALREADY)
+		{
 			LOG_DBG("Legacy advertising (sync_req) already stopped");
 			stopped_something = true; // Effectively stopped from our perspective
-		} else if (ret_legacy == -ECONNRESET) {
+		}
+		else if (ret_legacy == -ECONNRESET)
+		{
 			LOG_WRN("Failed to stop legacy adv (sync_req), radio was reset: %d", ret_legacy);
-		} else {
+		}
+		else
+		{
 			LOG_ERR("Failed to stop legacy adv (sync_req): %d", ret_legacy);
 		}
 	}
 
 	// Try to stop extended sensor advertising
-	if (g_adv_sensor_ext_handle && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
+	if (g_adv_sensor_ext_handle && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag))
+	{
 		ret_ext = bt_le_ext_adv_stop(g_adv_sensor_ext_handle);
-		if (ret_ext == 0) {
+		if (ret_ext == 0)
+		{
 			LOG_DBG("Extended sensor advertising stopped");
 			stopped_something = true;
-		} else if (ret_ext == -EALREADY) {
+		}
+		else if (ret_ext == -EALREADY)
+		{
 			LOG_DBG("Extended sensor advertising already stopped");
 			stopped_something = true;
-		} else if (ret_ext == -ECONNRESET){
-             LOG_WRN("Failed to stop extended adv (sensor), radio was reset: %d", ret_ext);
-        }
-        else if (ret_ext != -EINVAL) { // -EINVAL if handle is invalid
+		}
+		else if (ret_ext == -ECONNRESET)
+		{
+			LOG_WRN("Failed to stop extended adv (sensor), radio was reset: %d", ret_ext);
+		}
+		else if (ret_ext != -EINVAL)
+		{ // -EINVAL if handle is invalid
 			LOG_ERR("Failed to stop extended sensor adv: %d", ret_ext);
 		}
 	}
-    
-    // If we explicitly stopped something or if adv_running_flag was already 0
-	if (stopped_something || !atomic_get(&adv_running_flag)) {
+
+	// If we explicitly stopped something or if adv_running_flag was already 0
+	if (stopped_something || !atomic_get(&adv_running_flag))
+	{
 		atomic_set(&adv_running_flag, 0);
-		atomic_set(&current_adv_type, 0);
-	} else if (!stopped_something && atomic_get(&adv_running_flag)) {
-        // This case means adv_running_flag was true, but we didn't match any current_adv_type
-        // to stop it. This might indicate a state inconsistency. Reset flags.
-        LOG_WRN("ADV was running but no matching type to stop. Resetting flags.");
-        atomic_set(&adv_running_flag, 0);
-		atomic_set(&current_adv_type, 0);
-    }
+		atomic_set(&current_adv_type, 2);
+	}
+	else if (!stopped_something && atomic_get(&adv_running_flag))
+	{
+		// This case means adv_running_flag was true, but we didn't match any current_adv_type
+		// to stop it. This might indicate a state inconsistency. Reset flags.
+		LOG_WRN("ADV was running but no matching type to stop. Resetting flags.");
+		atomic_set(&adv_running_flag, 0);
+		atomic_set(&current_adv_type, 2);
+	}
 }
 
 /**
@@ -525,21 +544,21 @@ static void start_sensor_advertising_ext(void)
 	int ret;
 
 	// Ensure legacy (sync_req) advertising is stopped
-	if (atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
-		ret = bt_le_adv_stop();
-		if (ret != 0 && ret != -EALREADY && ret != -ECONNRESET) {
-			LOG_ERR("Failed to stop legacy (sync_req) adv before starting ext sensor adv: %d", ret);
-			// Potentially don't proceed
-		}
-	}
+	if (atomic_get(&adv_running_flag)) { // Only try to stop if something is flagged as running
+        LOG_DBG("start_sensor_advertising_ext: Stopping existing advertising first.");
+        stop_all_advertising();
+        k_msleep(50); // Allow controller time to process stop
+    }
 
-	if (!g_adv_sensor_ext_handle) {
+	if (!g_adv_sensor_ext_handle)
+	{
 		LOG_ERR("Sensor extended adv handle is NULL. Cannot start.");
 		return;
 	}
 
-	ret = bt_le_ext_adv_set_data(g_adv_sensor_ext_handle, ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
-	if (ret) {
+	ret = bt_le_ext_adv_set_data(g_adv_sensor_ext_handle, ad_sensor_agg, ARRAY_SIZE(ad_sensor_agg), NULL, 0);
+	if (ret)
+	{
 		LOG_ERR("Failed to set sensor extended advertising data (err %d)", ret);
 		return;
 	}
@@ -548,15 +567,20 @@ static void start_sensor_advertising_ext(void)
 	// SENSOR_ADV_PAYLOAD_TYPE is the first byte *inside* manuf_payload_sensor
 	ret = bt_le_ext_adv_start(g_adv_sensor_ext_handle, BT_LE_EXT_ADV_START_DEFAULT);
 
-	if (ret && ret != -EALREADY) {
+	if (ret && ret != -EALREADY)
+	{
 		LOG_ERR("Failed to start sensor extended advertisement: %d", ret);
 		atomic_set(&adv_running_flag, 0);
 		atomic_set(&current_adv_type, 2);
-	} else {
+	}
+	else
+	{
 		atomic_set(&adv_running_flag, 1);
 		atomic_set(&current_adv_type, SENSOR_ADV_PAYLOAD_TYPE); // Mark as extended sensor type
-		if (ret == -EALREADY) LOG_DBG("Sensor Ext Adv already started/updated.");
-		else LOG_DBG("Sensor Ext Adv started/updated.");
+		if (ret == -EALREADY)
+			LOG_DBG("Sensor Ext Adv already started/updated.");
+		else
+			LOG_DBG("Sensor Ext Adv started/updated.");
 	}
 }
 
@@ -572,21 +596,22 @@ static void start_sync_request_advertising(void)
 
 	// Ensure other type is stopped first
 	// Ensure extended (sensor) advertising is stopped
-	if (g_adv_sensor_ext_handle && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag)) {
-		ret = bt_le_ext_adv_stop(g_adv_sensor_ext_handle);
-		if (ret != 0 && ret != -EALREADY && ret != -ECONNRESET && ret != -EINVAL) {
-			LOG_ERR("Failed to stop ext (sensor) adv before starting legacy sync_req adv: %d", ret);
-		}
-	}
+	if (atomic_get(&adv_running_flag)) { // Only try to stop if something is flagged as running
+        LOG_DBG("start_sync_request_advertising: Stopping existing advertising first.");
+        stop_all_advertising();
+        // Add a small delay to allow the controller to process the stop command fully.
+        // This is often necessary when rapidly switching advertising types/sets.
+        k_msleep(20); // Try 20-100ms, tune as needed.
+    }
 
 	LOG_DBG("Starting AWAY Scan Announcement advertising burst (Type 0x01)");
 
-	ret = bt_le_adv_start(&adv_param, ad_sync_req, ARRAY_SIZE(ad_sync_req), NULL, 0);
+	ret = bt_le_adv_start(adv_param, ad_sync_req, ARRAY_SIZE(ad_sync_req), NULL, 0);
 	if (ret && ret != -EALREADY)
 	{
 		LOG_ERR("Failed to start AWAY Scan Announce advertisement: %d", ret);
 		atomic_set(&adv_running_flag, 0);
-		atomic_set(&current_adv_type, 2); 
+		atomic_set(&current_adv_type, 2);
 	}
 	else if (ret == -EALREADY)
 	{
@@ -608,33 +633,37 @@ static void sync_adv_stop_work_handler(struct k_work *work)
 		stop_all_advertising();
 
 		// If we were in HOME state before sync adv, restart sensor ext adv
-        if (atomic_get(&current_state) == STATE_HOME_ADVERTISING) {
-            LOG_DBG("Sync ADV burst finished, restarting sensor EXT adv.");
-            start_sensor_advertising_ext();
-        } else {
-            LOG_DBG("Sync ADV burst finished, not in HOME state, no sensor adv restart.");
-        }
-
-	} else {
-        LOG_WRN("Sync adv stop work ran, but adv not running or not sync type (flag: %d, type: %d)",
-                (int)atomic_get(&adv_running_flag), (int)atomic_get(&current_adv_type));
+		if (atomic_get(&current_state) == STATE_HOME_ADVERTISING)
+		{
+			LOG_DBG("Sync ADV burst finished, restarting sensor EXT adv.");
+			start_sensor_advertising_ext();
+		}
+		else
+		{
+			LOG_DBG("Sync ADV burst finished, not in HOME state, no sensor adv restart.");
+		}
+	}
+	else
+	{
+		LOG_WRN("Sync adv stop work ran, but adv not running or not sync type (flag: %d, type: %d)",
+				(int)atomic_get(&adv_running_flag), (int)atomic_get(&current_adv_type));
 	}
 }
 
 static void sync_scan_trigger_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	device_state_t state = atomic_get(&current_state); 
+	device_state_t state = atomic_get(&current_state);
 
 	if (state == STATE_AWAY_LOGGING || STATE_HOME_ADVERTISING)
 	{
 		LOG_DBG("Sync Scan Triggers: Submitting scan_open_work");
 		k_work_submit(&scan_open_work);
-	} else 
-	{
-		LOG_WRN("Sync Scan Trigger ran but state is %d", state); 
 	}
-	
+	else
+	{
+		LOG_WRN("Sync Scan Trigger ran but state is %d", state);
+	}
 }
 
 /**
@@ -699,17 +728,17 @@ static void enter_state(device_state_t new_state)
 	{
 	case STATE_HOME_ADVERTISING:
 		LOG_INF("Entering Home Adv Mode");
-		set_imu_rate(true);													   // Set high IMU rate and performance mode
-		missed_sync_responses = 0; 
-		sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS; 
-		start_sensor_advertising_ext();											   // Start BLE advertisement
+		set_imu_rate(true); // Set high IMU rate and performance mode
+		missed_sync_responses = 0;
+		sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
+		start_sensor_advertising_ext();																	  // Start BLE advertisement
 		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); // Start timer to track in-home
 		break;
 	case STATE_AWAY_LOGGING:
 		LOG_INF("Entering Away Log Mode");
-		set_imu_rate(false); // Set low IMU rate and low-power mode
-		stop_all_advertising();	 // Stop advertising
-		uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4); 
+		set_imu_rate(false);	// Set low IMU rate and low-power mode
+		stop_all_advertising(); // Stop advertising
+		uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
 		k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(sync_check_interval_ms));
 		break;
 	case STATE_CHARGING:
@@ -767,30 +796,31 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
 	LOG_INF("Heartbeat from %s, RSSI=%d", addr_str, rssi);
 
-	// Stop scan and close timer 
+	// Stop scan and close timer
 	if (scan_active)
 	{
 		bt_le_scan_stop();
 		scan_active = false;
 	}
 	k_timer_stop(&scan_close_timer);
+	(void)k_work_cancel_delayable(&sync_scan_trigger_work); // Cancel pending scan if we got a response early
 
 	// Reset miss counter
 	missed_sync_responses = 0;
 	sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
 
-	// Handle state 
+	// Handle state
 	device_state_t s = atomic_get(&current_state);
 
 	if (s == STATE_AWAY_LOGGING)
 	{
 		LOG_DBG("Sync Response Received: Transitioning to HOME state.");
-		enter_state(STATE_HOME_ADVERTISING); 
+		enter_state(STATE_HOME_ADVERTISING);
 	}
 	else if (s == STATE_HOME_ADVERTISING)
 	{
 		LOG_DBG("Sync Response Received: Confirmed HOME state.");
-		start_sensor_advertising_ext(); 
+		start_sensor_advertising_ext();
 	}
 }
 
@@ -837,7 +867,7 @@ static void sync_check_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	device_state_t state = atomic_get(&current_state); 
+	device_state_t state = atomic_get(&current_state);
 	// Only proceed if we are actually in AWAY state
 	if (state != STATE_AWAY_LOGGING && state != STATE_HOME_ADVERTISING)
 	{
@@ -853,7 +883,7 @@ static void sync_check_work_handler(struct k_work *work)
 	manuf_payload_sync_req[0] = SYNC_REQ_ADV_PAYLOAD_TYPE;
 	sys_put_le16(time_to_announce_s, &manuf_payload_sync_req[1]);
 
-	start_sync_request_advertising(); 
+	start_sync_request_advertising();
 
 	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
 	{
@@ -870,10 +900,17 @@ static void sync_check_work_handler(struct k_work *work)
 		if (ret < 0)
 		{
 			LOG_ERR("Failed to schedule away scan trigger work (%d)", ret);
+			stop_all_advertising();
+
+			if (state == STATE_HOME_ADVERTISING)
+			{
+				start_sensor_advertising_ext();
+			}
 		}
-	} else 
+	}
+	else
 	{
-		LOG_ERR("Sync Req ADV failed to start, scan not scheduled"); 
+		LOG_ERR("Sync Req ADV failed to start, scan not scheduled");
 	}
 }
 
@@ -886,16 +923,16 @@ static void sync_check_work_handler(struct k_work *work)
  * @param w Pointer to the work structure.
  */
 static void scan_open_work_handler(struct k_work *w)
-{	
+{
 	ARG_UNUSED(w);
 
 	// Stop any advertising before scanning
 	if (atomic_get(&adv_running_flag))
 	{
-		stop_all_advertising(); 
+		stop_all_advertising();
 	}
 
-	LOG_DBG("Scan Open Work: Starting scan (State: %d)", (int)atomic_get(&current_state)); 
+	LOG_DBG("Scan Open Work: Starting scan (State: %d)", (int)atomic_get(&current_state));
 	int err = bt_le_scan_start(&scan_param, scan_cb);
 	if (err && err != -EALREADY)
 	{
@@ -932,14 +969,15 @@ static void scan_close_work_handler(struct k_work *w)
 
 	if (state == STATE_HOME_ADVERTISING)
 	{
-		missed_sync_responses ++; 
-		LOG_WRN("Sync Response Missed (%u/%u) while HOME", missed_sync_responses, MISSES_BEFORE_AWAY); 
-		
+		missed_sync_responses++;
+		LOG_WRN("Sync Response Missed (%u/%u) while HOME", missed_sync_responses, MISSES_BEFORE_AWAY);
+
 		if (missed_sync_responses >= MISSES_BEFORE_AWAY)
 		{
 			LOG_WRN("Missed %u consecutive Sync Responses, entering AWAY", MISSES_BEFORE_AWAY);
 			enter_state(STATE_AWAY_LOGGING);
-		} else
+		}
+		else
 		{
 			if (!atomic_get(&adv_running_flag))
 			{
@@ -947,7 +985,8 @@ static void scan_close_work_handler(struct k_work *w)
 				start_sensor_advertising_ext();
 			}
 		}
-	} else if (state == STATE_AWAY_LOGGING)
+	}
+	else if (state == STATE_AWAY_LOGGING)
 	{
 		LOG_WRN("Sync Response MISSED while AWAY");
 		sync_check_interval_ms = MIN(sync_check_interval_ms * 2, AWAY_BACKOFF_MAX_INTERVAL_MS);
@@ -955,7 +994,7 @@ static void scan_close_work_handler(struct k_work *w)
 		sync_check_interval_ms = MIN(sync_check_interval_ms, AWAY_BACKOFF_MAX_INTERVAL_MS);
 
 		LOG_INF("AWAY Backoff: Next sync check attempt in %u ms", sync_check_interval_ms);
-		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); 
+		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms));
 
 		if (atomic_get(&adv_running_flag))
 		{
@@ -1029,8 +1068,8 @@ static void usb_disconnect_work_handler(struct k_work *work)
 	LOG_DBG("Workqueue: USB disconnected, entering HOME");
 
 	if (atomic_get(&current_state) == STATE_CHARGING)
-	{	
-		LOG_DBG("Workqueue: USB Disconnected, entering AWAY state to initiate sync check"); 
+	{
+		LOG_DBG("Workqueue: USB Disconnected, entering AWAY state to initiate sync check");
 		enter_state(STATE_HOME_ADVERTISING);
 	}
 	else
@@ -1074,7 +1113,7 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 static void sync_check_timer_expiry(struct k_timer *timer_id)
 {
 	ARG_UNUSED(timer_id);
-	device_state_t state = atomic_get(&current_state); 
+	device_state_t state = atomic_get(&current_state);
 	if (state == STATE_AWAY_LOGGING || state == STATE_HOME_ADVERTISING)
 	{
 		k_work_submit(&sync_check_work);
@@ -1183,12 +1222,22 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
  * @param buffer Pointer to the output buffer.
  * @param buffer_size Size of the output buffer.
  */
-void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_size)
+void prepare_aggregated_packet(const ble_packet_t *data,
+							   const imu_payload_t *imu_batch,
+							   uint8_t num_imu_samples,
+							   uint8_t *buffer, size_t buffer_size)
 {
-	if (buffer_size < SENSOR_DATA_PACKET_SIZE)
+	if (buffer_size < AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)
 	{
-		LOG_ERR("Buffer too small (%d < %d)", buffer_size, SENSOR_DATA_PACKET_SIZE);
+		LOG_ERR("Buffer too small (%d < %d)", buffer_size, AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE);
 		return;
+	}
+
+	if (num_imu_samples > MAX_IMU_SAMPLES_IN_PACKET)
+	{
+		LOG_WRN("num_imu_samples (%u) > MAX_IMU_SAMPLES_IN_PACKET (%d). Clamping.",
+				num_imu_samples, MAX_IMU_SAMPLES_IN_PACKET);
+		num_imu_samples = MAX_IMU_SAMPLES_IN_PACKET;
 	}
 
 	int offset = 0;
@@ -1202,7 +1251,6 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 	// Pressure (Convert to uint16_t offset Pascals)
 	uint16_t pressure_x10hpa = (uint16_t)data->pressure;
 	uint16_t pressure_offset = 0;
-
 	if (pressure_x10hpa >= PRESSURE_BASE_HPA_X10)
 	{
 		pressure_offset = pressure_x10hpa - PRESSURE_BASE_HPA_X10;
@@ -1210,21 +1258,41 @@ void prepare_packet(const ble_packet_t *data, uint8_t *buffer, size_t buffer_siz
 	sys_put_le16(pressure_offset, &buffer[offset]);
 	offset += 2; // 2 bytes
 
-	/* IMU data */
-	memcpy(&buffer[offset], data->imu_data, sizeof(data->imu_data));
-	offset += sizeof(data->imu_data); // 12 bytes
-
-	/* Timestamp */
-	sys_put_le32(data->timestamp, &buffer[offset]);
-	offset += 4; // 4 bytes
-
 	/* Battery percentage */
 	buffer[offset++] = data->battery; // 1 byte
 
-	// Check total size
-	if (offset != SENSOR_DATA_PACKET_SIZE)
+	// Number of IMU samples in this batch
+	buffer[offset++] = num_imu_samples; // 1 byte
+
+	// Batch Timestamp (overall timestamp for this packet)
+	sys_put_le32(data->timestamp, &buffer[offset]);
+	offset += 4; // 4 bytes
+
+	// IMU data batch (each imu_payload_t is 16 bytes: 6*int16_t + uint32_t timestamp)
+	for (uint8_t i = 0; i < num_imu_samples; i++)
 	{
-		LOG_WRN("BLE packet size mimatch: expected %d, got %d", SENSOR_DATA_PACKET_SIZE, offset);
+		memcpy(&buffer[offset], imu_batch[i].imu_data, sizeof(imu_batch[i].imu_data));
+		offset += sizeof(imu_batch[i].imu_data); // 12 bytes
+		sys_put_le32(imu_batch[i].timestamp, &buffer[offset]);
+		offset += sizeof(imu_batch[i].timestamp); // 4 bytes
+	}
+
+	// Fill remaining space if num_imu_samples < MAX_IMU_SAMPLES_IN_PACKET to maintain fixed size for encryption
+	// This is important if the encryption expects a fixed size input.
+	// If encryption can handle variable (but known) length, this padding isn't strictly needed for encryption
+	// but fixed size simplifies things. Let's assume fixed size for now.
+	int remaining_imu_slots = MAX_IMU_SAMPLES_IN_PACKET - num_imu_samples;
+	if (remaining_imu_slots > 0)
+	{
+		memset(&buffer[offset], 0, remaining_imu_slots * sizeof(imu_payload_t));
+		offset += remaining_imu_slots * sizeof(imu_payload_t);
+	}
+
+	// Check total size
+	if (offset != AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)
+	{
+		LOG_WRN("Aggregated packet size mismatch: expected %d, got %d. Num_samples: %u",
+				AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE, offset, num_imu_samples);
 	}
 }
 
@@ -1411,9 +1479,16 @@ SETTINGS_STATIC_HANDLER_DEFINE(
  * @param out Pointer to the output buffer.
  * @return 0 on success, negative error code on failure.
  */
-static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
+static int encrypt_aggregated_sensor_block(const uint8_t *plain, size_t plain_len, uint8_t *out, size_t out_len)
 {
-	memset(out, 0, ENC_ADV_PAYLOAD_LEN);
+	if (out_len < (1 + NONCE_LEN + plain_len))
+	{
+		LOG_ERR("Output buffer too small for encryption. Needed %zu, got %zu",
+				(1 + NONCE_LEN + plain_len), out_len);
+		return -ENOMEM;
+	}
+
+	memset(out, 0, out_len);
 
 	if (g_aes_key_id == PSA_KEY_ID_NULL)
 	{
@@ -1465,9 +1540,9 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	memcpy(&out[1], nonce, NONCE_LEN);
 
 	// Encrypt data, placing ciphertext *after* the nonce space in 'out'
-	st = psa_cipher_update(&op, plain, SENSOR_DATA_PACKET_SIZE,
+	st = psa_cipher_update(&op, plain, plain_len,
 						   &out[1 + NONCE_LEN],		// Output buffer starts after nonce + type
-						   SENSOR_DATA_PACKET_SIZE, // Max capacity for ciphertext
+						   plain_len, // Max capacity for ciphertext
 						   &olen);
 	if (st != PSA_SUCCESS)
 	{
@@ -1478,11 +1553,11 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	ciphertext_len += olen;
 
 	// Finish the operation (usually produces no more output for CTR)
-	if (ciphertext_len < SENSOR_DATA_PACKET_SIZE)
+	if (ciphertext_len < plain_len)
 	{
 		st = psa_cipher_finish(&op,
 							   out + 1 + NONCE_LEN + ciphertext_len,	 // Where to write if any
-							   SENSOR_DATA_PACKET_SIZE - ciphertext_len, // Remaining capacity
+							   plain_len - ciphertext_len, // Remaining capacity
 							   &olen);
 
 		if (st != PSA_SUCCESS)
@@ -1497,10 +1572,10 @@ static int encrypt_sensor_block(const uint8_t *plain, uint8_t *out)
 	// Now 'out' contains [ 1 byte type | 8-byte nonce | 20-byte ciphertext ]
 
 	// --- Verification ---
-	if (ciphertext_len != SENSOR_DATA_PACKET_SIZE)
+	if (ciphertext_len != plain_len)
 	{
 		LOG_ERR("Ciphertext length mismatch: expected %d, got %u",
-				SENSOR_DATA_PACKET_SIZE, (unsigned int)ciphertext_len);
+				plain_len, (unsigned int)ciphertext_len);
 		ret = -EIO; // Unexpected data size error
 		// Nonce is copied, but ciphertext is incomplete/wrong. Return error.
 		goto cleanup_op; // Ensure abort is called
@@ -1537,7 +1612,10 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	sensor_message_t received_msg;						// Received from message queue
 	ble_packet_t current_sensor_state = {0};			// Initialise
 	current_sensor_state.timestamp = k_uptime_get_32(); // Set initial timestamp
-	bool state_needs_update = false;					// Flag to reduce ADV updates
+
+	static imu_payload_t imu_batch_buffer[MAX_IMU_SAMPLES_IN_PACKET];
+	static uint8_t imu_batch_count = 0;
+	static uint32_t last_adv_payload_update_time = 0;
 
 	uint32_t save_timer = k_uptime_get_32(); // Timer for saving nonce
 
@@ -1550,18 +1628,24 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 	while (1)
 	{
+		bool new_data_for_adv = false;
+
 		/* Get each message from the message queue */
 		ret = k_msgq_get(&sensor_message_queue, &received_msg, K_FOREVER);
 		if (ret == 0)
 		{
-			state_needs_update = true; // Received new data
-
 			// Update the local copy of the full sensor state
 			switch (received_msg.type)
 			{
 			case SENSOR_MSG_TYPE_IMU:
-				memcpy(current_sensor_state.imu_data, received_msg.payload.imu.imu_data, sizeof(current_sensor_state.imu_data));
-				current_sensor_state.timestamp = received_msg.payload.imu.timestamp;
+				if (imu_batch_count < MAX_IMU_SAMPLES_IN_PACKET)
+				{
+					imu_batch_buffer[imu_batch_count++] = received_msg.payload.imu;
+				}
+				else
+				{
+					LOG_WRN("IMU batch buffer full, dropping new IMU samples");
+				}
 				break;
 			case SENSOR_MSG_TYPE_ENVIRONMENT:
 				current_sensor_state.temperature = received_msg.payload.env.temperature;
@@ -1571,6 +1655,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				{
 					current_sensor_state.timestamp = received_msg.payload.env.timestamp;
 				}
+				new_data_for_adv = true;
 				break;
 			case SENSOR_MSG_TYPE_BATTERY:
 				current_sensor_state.battery = received_msg.payload.batt.battery;
@@ -1578,207 +1663,228 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				{
 					current_sensor_state.timestamp = received_msg.payload.batt.timestamp;
 				}
+				new_data_for_adv = true;
 				break;
 			default:
-				state_needs_update = false; // No relevant update
 				break;
 			}
 		}
 		else
 		{
 			LOG_ERR("Failed to get message from queue: %d", ret);
-			state_needs_update = false;
 			k_sleep(K_SECONDS(1));
 			continue;
 		}
 
 		// Check the current device state
 		device_state_t active_state = atomic_get(&current_state);
+		uint32_t current_time = k_uptime_get_32();
 
 		// Perform actions based on state only if new data arrived
-		if (state_needs_update)
+		if (active_state == STATE_HOME_ADVERTISING)
 		{
-			if (active_state == STATE_HOME_ADVERTISING)
+			if (file_is_open)
 			{
-				if (file_is_open)
+				LOG_DBG("Home mode: Closing log file.");
+				ret = fs_sync(&log_file); // Ensure data is flushed
+				if (ret < 0)
 				{
-					LOG_DBG("Home mode: Closing log file.");
-					ret = fs_sync(&log_file); // Ensure data is flushed
-					if (ret < 0)
-					{
-						LOG_ERR("Failed to sync log file before closing: %d", ret);
-					}
-					ret = fs_close(&log_file);
-					if (ret < 0)
-					{
-						LOG_ERR("Failed to close log file: %d", ret);
-					}
-					file_is_open = false;
-					log_write_count = 0; // Reset sync counter
+					LOG_ERR("Failed to sync log file before closing: %d", ret);
+				}
+				ret = fs_close(&log_file);
+				if (ret < 0)
+				{
+					LOG_ERR("Failed to close log file: %d", ret);
+				}
+				file_is_open = false;
+				log_write_count = 0; // Reset sync counter
+			}
+
+			bool send_adv = false;
+			if (imu_batch_count > 0 && (imu_batch_count == MAX_IMU_SAMPLES_IN_PACKET || current_time - last_adv_payload_update_time >= ADV_PAYLOAD_UPDATE_INTERVAL_MS))
+			{
+				send_adv = true;
+			}
+
+			if (send_adv)
+			{
+				if (imu_batch_count > 0)
+				{
+					current_sensor_state.timestamp = imu_batch_buffer[imu_batch_count - 1].timestamp;
+				}
+				else
+				{
+					current_sensor_state.timestamp = current_time;
 				}
 
-				// Build the 20-byte plain text
-				prepare_packet(&current_sensor_state, manuf_plain, sizeof(manuf_plain));
+				prepare_aggregated_packet(&current_sensor_state, imu_batch_buffer, imu_batch_count, manuf_plain_aggregated, sizeof(manuf_plain_aggregated));
 
-				// Encrypt to 31-byte buffer
-				ret = encrypt_sensor_block(manuf_plain, manuf_payload_sensor);
+				ret = encrypt_aggregated_sensor_block(manuf_plain_aggregated, AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE,
+													  manuf_payload_sensor_aggregated, sizeof(manuf_payload_sensor_aggregated));
+
 				if (ret != 0)
 				{
 					LOG_ERR("Encrypt failed - ADV not updated: %d", ret);
-					state_needs_update = false;
-					k_sleep(K_SECONDS(5));
-					continue;
 				}
-
-				if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE)
+				else
 				{
-					// Update the advertising data (non-blocking)
-					ret = bt_le_ext_adv_set_data(g_adv_sensor_ext_handle, ad_sensor, ARRAY_SIZE(ad_sensor), NULL, 0);
-					if (ret && ret != -EALREADY)
+					if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE)
 					{
-						LOG_WRN("Failed to update ADV data: %d", ret);
+						ret = bt_le_ext_adv_set_data(g_adv_sensor_ext_handle, ad_sensor_agg, ARRAY_SIZE(ad_sensor_agg), NULL, 0);
+						if (ret && ret != -EALREADY)
+						{ // -EALREADY is fine, means it was already trying to send
+							LOG_WRN("Failed to update aggregated ADV data: %d", ret);
+						}
+						else
+						{
+							LOG_DBG("Updated ADV with %u IMU samples.", imu_batch_count);
+						}
 					}
 				}
+				imu_batch_count = 0;
+				last_adv_payload_update_time = current_time;
+			}
 
-				if (k_uptime_get_32() - save_timer > NONCE_SAVE_INTERVAL)
+			if (current_time - save_timer > NONCE_SAVE_INTERVAL)
+			{
+				ret = settings_save_one(BORUS_SETTINGS_PATH "/nonce_ctr", (const void *)&nonce_counter, sizeof(nonce_counter));
+				if (ret == 0)
 				{
-					ret = settings_save_one(BORUS_SETTINGS_PATH "/nonce_ctr", (const void *)&nonce_counter, sizeof(nonce_counter));
-					if (ret == 0)
+					LOG_DBG("Saved nonce_counter to NVS: %llu", nonce_counter);
+				}
+				else
+				{
+					LOG_ERR("Failed to save nonce_counter to NVS: %d", ret);
+				}
+				save_timer = k_uptime_get_32();
+			}
+		}
+		else if (active_state == STATE_AWAY_LOGGING)
+		{
+			if (imu_batch_count > 0)
+			{
+				imu_batch_count = 0;
+				last_adv_payload_update_time = current_time;
+			}
+
+			// Only log IMU data in away mode
+			if (ret == 0 && received_msg.type == SENSOR_MSG_TYPE_IMU)
+			{
+				// Open file if not already open and storage is not full
+				if (!file_is_open && !log_storage_full)
+				{
+					LOG_DBG("Away mode: Opening log file %s", LOG_FILE_PATH);
+
+					int ret = fs_open(&log_file, LOG_FILE_PATH, FS_O_APPEND | FS_O_CREATE | FS_O_WRITE);
+
+					if (ret < 0)
 					{
-						LOG_DBG("Saved nonce_counter to NVS: %llu", nonce_counter);
+						LOG_ERR("Failed to open log file %s: %d", LOG_FILE_PATH, ret);
+						k_sleep(K_SECONDS(5));
 					}
 					else
 					{
-						LOG_ERR("Failed to save nonce_counter to NVS: %d", ret);
+						LOG_DBG("Log file opened successfully");
+						file_is_open = true;
+						log_write_count = 0; // Reset sync counter on open
 					}
-					save_timer = k_uptime_get_32();
 				}
 
-				state_needs_update = false;
-			}
-			else if (active_state == STATE_AWAY_LOGGING)
-			{
-				// Ensure BLE update flag is false if we are only logging
-				state_needs_update = false;
-
-				// Only log IMU data in away mode
-				if (received_msg.type == SENSOR_MSG_TYPE_IMU)
+				// Prepare binary log record only if file is open
+				if (file_is_open && !log_storage_full)
 				{
-					// Open file if not already open and storage is not full
-					if (!file_is_open && !log_storage_full)
+					// Prepare binary log record
+					struct __attribute__((packed))
 					{
-						LOG_DBG("Away mode: Opening log file %s", LOG_FILE_PATH);
+						uint32_t timestamp;
+						int16_t imu[6];
+					} log_record;
 
-						int ret = fs_open(&log_file, LOG_FILE_PATH, FS_O_APPEND | FS_O_CREATE | FS_O_WRITE);
+					log_record.timestamp = received_msg.payload.imu.timestamp;
+					memcpy(log_record.imu, received_msg.payload.imu.imu_data, sizeof(log_record.imu));
 
-						if (ret < 0)
+					// Write the record
+					ssize_t written = fs_write(&log_file, &log_record, sizeof(log_record));
+					if (written < 0)
+					{
+						LOG_ERR("Failed to write to log file: %d", (int)written);
+						if (written == -ENOSPC)
 						{
-							LOG_ERR("Failed to open log file %s: %d", LOG_FILE_PATH, ret);
-							k_sleep(K_SECONDS(5));
-							continue;
+							LOG_WRN("Log storage full");
+							log_storage_full = true; // Set flag
 						}
-						else
-						{
-							LOG_DBG("Log file opened successfully");
-							file_is_open = true;
-							log_write_count = 0; // Reset sync counter on open
-						}
+						fs_close(&log_file); // Close on error
+						file_is_open = false;
 					}
-
-					// Prepare binary log record only if file is open
-					if (file_is_open && !log_storage_full)
+					else if (written < sizeof(log_record))
 					{
-						// Prepare binary log record
-						struct __attribute__((packed))
-						{
-							uint32_t timestamp;
-							int16_t imu[6];
-						} log_record;
-
-						log_record.timestamp = received_msg.payload.imu.timestamp;
-						memcpy(log_record.imu, received_msg.payload.imu.imu_data, sizeof(log_record.imu));
-
-						// Write the record
-						ssize_t written = fs_write(&log_file, &log_record, sizeof(log_record));
-						if (written < 0)
-						{
-							LOG_ERR("Failed to write to log file: %d", (int)written);
-							if (written == -ENOSPC)
-							{
-								LOG_WRN("Log storage full");
-								log_storage_full = true; // Set flag
-							}
-							fs_close(&log_file); // Close on error
-							file_is_open = false;
-						}
-						else if (written < sizeof(log_record))
-						{
-							LOG_WRN("Partial write to log file: %d / %u bytes", (int)written, sizeof(log_record));
-							fs_close(&log_file);
-							file_is_open = false;
-						}
-						else
-						{
-							log_write_count++;
-
-							// Sync periodically to flush cache to flash (e.g., every 1000 records)
-							// Adjust based on data rate and acceptable data loss on power failure
-							// LOG_DBG("Logged IMU data (%d bytes), write count: %d",
-							// 		(int)written, log_write_count);
-
-							if (log_write_count >= LOG_SYNC_THRESHOLD)
-							{
-								ret = fs_sync(&log_file);
-								if (ret < 0)
-								{
-									LOG_WRN("Log file sync failed: %d", ret);
-								}
-								else
-								{
-									LOG_DBG("Log file synced");
-								}
-								log_write_count = 0;
-							}
-						}
+						LOG_WRN("Partial write to log file: %d / %u bytes", (int)written, sizeof(log_record));
+						fs_close(&log_file);
+						file_is_open = false;
 					}
-					else if (log_storage_full)
+					else
 					{
-						// Optional: Log periodically that storage is full
-						static uint32_t last_full_log = 0;
-						if (k_uptime_get_32() - last_full_log > NONCE_SAVE_INTERVAL)
+						log_write_count++;
+
+						// Sync periodically to flush cache to flash (e.g., every 1000 records)
+						// Adjust based on data rate and acceptable data loss on power failure
+						// LOG_DBG("Logged IMU data (%d bytes), write count: %d",
+						// 		(int)written, log_write_count);
+
+						if (log_write_count >= LOG_SYNC_THRESHOLD)
 						{
-							LOG_WRN("Storage is full. No longer logging data.");
-							last_full_log = k_uptime_get_32();
+							ret = fs_sync(&log_file);
+							if (ret < 0)
+							{
+								LOG_WRN("Log file sync failed: %d", ret);
+							}
+							else
+							{
+								LOG_DBG("Log file synced");
+							}
+							log_write_count = 0;
 						}
-						continue;
 					}
 				}
-			}
-			else
-			{
-				// Close file if open (transitioned from AWAY)
-				if (file_is_open)
+				else if (log_storage_full)
 				{
-					LOG_DBG("State %d: Closing log file.", active_state);
-					ret = fs_sync(&log_file); // Sync before closing
-					if (ret < 0)
+					// Optional: Log periodically that storage is full
+					static uint32_t last_full_log = 0;
+					if (current_time - last_full_log > NONCE_SAVE_INTERVAL)
 					{
-						LOG_ERR("Failed to sync log file before closing: %d", ret);
+						LOG_WRN("Storage is full. No longer logging data.");
+						last_full_log = current_time;
 					}
-					ret = fs_close(&log_file);
-					if (ret < 0)
-					{
-						LOG_ERR("Failed to close log file: %d", ret);
-					}
-					file_is_open = false;
-					log_write_count = 0;
 				}
 			}
-			// Reset update flag after processing
-			state_needs_update = false;
 		}
-		// Loop continues, blocking on k_msgq_get
+		else
+		{
+			// Close file if open (transitioned from AWAY)
+			if (file_is_open)
+			{
+				LOG_DBG("State %d: Closing log file.", active_state);
+				ret = fs_sync(&log_file); // Sync before closing
+				if (ret < 0)
+				{
+					LOG_ERR("Failed to sync log file before closing: %d", ret);
+				}
+				ret = fs_close(&log_file);
+				if (ret < 0)
+				{
+					LOG_ERR("Failed to close log file: %d", ret);
+				}
+				file_is_open = false;
+				log_write_count = 0;
+			}
+			if (imu_batch_count > 0)
+			{
+				imu_batch_count = 0;
+				last_adv_payload_update_time = current_time;
+			}
+		}
 	}
+	// Loop continues, blocking on k_msgq_get
 }
 
 /**
@@ -1977,7 +2083,7 @@ int main(void)
 	if (ret)
 	{
 		LOG_ERR("Failed to create sensor extended adv set: %d", ret);
-		return -1; 
+		return -1;
 	}
 
 	ret = setup_scan_filter();
@@ -2068,7 +2174,7 @@ int main(void)
 	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
 	k_work_init(&scan_open_work, scan_open_work_handler);
 	k_work_init(&scan_close_work, scan_close_work_handler);
-	k_work_init(&sync_check_work, sync_check_work_handler);						// Init new work
+	k_work_init(&sync_check_work, sync_check_work_handler);					// Init new work
 	k_work_init_delayable(&sync_adv_stop_work, sync_adv_stop_work_handler); // Init new delayable work
 	k_work_init_delayable(&sync_scan_trigger_work, sync_scan_trigger_handler);
 
