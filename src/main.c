@@ -54,8 +54,8 @@ LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
 
 /* -------------------- Watchdog Timer --------------------*/
 
-#define WDT_TIMEOUT_MS 4000		  // Watchdog timeout
-#define WDT_FEED_INTERVAL_MS 1000 // Watchdog feed interval
+#define WDT_TIMEOUT_MS 			4000	// Watchdog timeout
+#define WDT_FEED_INTERVAL_MS 	1000	// Watchdog feed interval
 
 static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); // Get the WDT device
 static int wdt_channel_id = -1;											 // Initialize the WDT channel ID
@@ -63,8 +63,8 @@ static struct k_timer wdt_feed_timer;									 // Timer for feeding the watchdog
 
 /* -------------------- BLE Packet Encryption -------------------- */
 
-#define BORUS_SETTINGS_PATH "borus/state" // Save nonce in NVM, allow reboot
-#define NONCE_SAVE_INTERVAL 5 * 60 * 1000 // Save nonce every 5 minutes
+#define BORUS_SETTINGS_PATH	"borus/state" // Save nonce in NVM, allow reboot
+#define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
 
 static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
 static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
@@ -72,16 +72,16 @@ static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 1024
-#define BMP390_HANDLER_STACKSIZE 1024
+#define BMI270_HANDLER_STACKSIZE 	1024
+#define BMP390_HANDLER_STACKSIZE 	1024
 #define BLE_LOGGER_THREAD_STACKSIZE 4096
-#define SCANNER_THREAD_STACKSIZE 1024
+#define SCANNER_THREAD_STACKSIZE 	1024
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 5 // Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 6 // Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 7	  // Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 7 // Lower priority tasks for scan AP heartbeat
+#define BMI270_HANDLER_PRIORITY 5 	// Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 6 	// Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 	7	// Lower priority tasks for BLE and logging
+#define SCANNER_THREAD_PRIORITY 7 	// Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -105,17 +105,17 @@ typedef enum
 	STATE_CHARGING			// USB connected
 } device_state_t;
 
-static struct k_work battery_timeout_work; // Work item for battery timeout -> Periodic voltage reading
-static struct k_work usb_connect_work;	   // Work item for USB connect -> CHARGING state
-static struct k_work usb_disconnect_work;  // Work item for USB disconnect -> HOME state (or chosen default)
-static struct k_work scan_found_ap_work;   // Work item for Scan Found AP -> HOME state
-static struct k_work scan_open_work;
+static struct k_work battery_timeout_work; 	// Work item for battery timeout -> Periodic voltage reading
+static struct k_work usb_connect_work;	   	// Work item for USB connect -> CHARGING state
+static struct k_work usb_disconnect_work;  	// Work item for USB disconnect -> HOME state (or chosen default)
+static struct k_work scan_found_ap_work;   	// Work item for Scan Found AP -> HOME state
+static struct k_work scan_open_work;		
 static struct k_work scan_close_work;
 static struct k_work sync_check_work;
 static struct k_work_delayable sync_adv_stop_work;
-static struct k_work_delayable sync_scan_trigger_work;
+static struct k_work_delayable sync_scan_trigger_work;	
 
-// --- Use atomic type for state changes between threads/ISRs
+// Use atomic type for state changes between threads/ISRs
 static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
 
 /* -------------------- Message Queue for Sensor Data -------------------- */
@@ -170,53 +170,49 @@ K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 32, 4);
 K_SEM_DEFINE(bmi270_isr_sem, 0, 20);
 // K_SEM_DEFINE(bmp390_isr_sem, 0, 1);
 
-/* -------------------- Timers for hearbeat check -------------------- */
+/* -------------------- Timers -------------------- */
 
-// Timers for Periodic Tasks
 static struct k_timer battery_timer;	// For periodic battery reading
 static struct k_timer sync_check_timer; // For scan open
 static struct k_timer scan_close_timer; // For scan close
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 1000			// Read environment at 1 Hz
-#define BATTERY_READ_INTERVAL K_MINUTES(15) // Every 15 minute read one battery voltage
-#define HEARTBEAT_TIMEOUT K_MINUTES(5)		// If no heartbeat for 90s, assume away
-#define BLE_ADV_INTERVAL_MIN 32				// BLE advertise interval 32*0.625 ms
-#define BLE_ADV_INTERVAL_MAX 33				// BLE advertise interval
-#define SENSOR_ADV_PAYLOAD_TYPE 0x00
-#define SYNC_REQ_ADV_PAYLOAD_TYPE 0x01
-
-#define MAX_IMU_SAMPLES_IN_PACKET 14
-#define ADV_PAYLOAD_UPDATE_INTERVAL_MS 140
-
-#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE 233
-#define AGGREGATED_ENC_ADV_PAYLOAD_LEN (1 + NONCE_LEN + AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)
-
-#define NONCE_LEN 8													  // Size of the encryption nonce
-
-#define SYNC_REQ_PAYLOAD_LEN (1 + 2)
-#define PRESSURE_BASE_HPA_X10 8500 // Base offset in hPa x 10
-#define TEMPERATURE_LOW_LIMIT 30   // -30 degree as the lowest temperature of interest
-#define TEMPERATURE_HIGH_LIMIT 40  // +40 degree as the highest temperature of interest
+#define BMP390_READ_INTERVAL 					1000 			// Read environment at 1 Hz
+#define BATTERY_READ_INTERVAL 					K_MINUTES(15)	// Every 15 minute read one battery voltage
+#define SENSOR_ADV_PAYLOAD_TYPE 				0x00			// Custom packet type 0x00: Sensor data
+#define SYNC_REQ_ADV_PAYLOAD_TYPE 				0x01			// Custom packet type 0x01: Time sync data
+#define MAX_IMU_SAMPLES_IN_PACKET 				14				// (251 - 9)/16: 251 bytes max - 9 bytes (env, nonce, etc.), divided by IMU (16 bytes)
+#define ADV_PAYLOAD_UPDATE_INTERVAL_MS 			140				// If sample at 100Hz (10ms) * 14 samples = 140 ms 
+#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	233				// 1+2+1+1+4+16*14: see prepare packet
+#define AGGREGATED_ENC_ADV_PAYLOAD_LEN 			(1 + NONCE_LEN + AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)	// Custom type + Nonce + Payload
+#define NONCE_LEN 								8				// Size of the encryption nonce
+#define SYNC_REQ_PAYLOAD_LEN 					(1 + 2)			// Custom type + Time
+#define PRESSURE_BASE_HPA_X10 					8500 			// Base offset in hPa x 10
+#define TEMPERATURE_LOW_LIMIT 					30   			// -30 degree as the lowest temperature of interest
+#define TEMPERATURE_HIGH_LIMIT 					40  			// +40 degree as the highest temperature of interest
 
 /* -------------------- File system and MSC -------------------- */
 
-#define LOG_FILE_PATH "/lfs1/imu_log.bin" // File path for the log file
-#define LFS_MOUNT_POINT "/lfs1"			  // Mount point for the file system
+#define LOG_FILE_PATH "/lfs1/imu_log.bin" 				// File path for the log file
+#define LFS_MOUNT_POINT "/lfs1"			  				// Mount point for the file system
 
-USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00"); // Define the USB MSC LUN
+USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
-/* -------------------- BLE Legacy Configurations -------------------- */
+/* -------------------- BLE Configurations -------------------- */
 
-#define SYNC_CHECK_INTERVAL_BASE_MS 1 * 60 * 1000
-#define SYNC_REQ_ADV_BURST_DURATION K_MSEC(250) // Duration to send advertisment
-#define X_ANNOUNCED_S 3							// Fixed time (seconds) announced until the next scan
-#define MISSES_BEFORE_AWAY 3
-#define AWAY_BACKOFF_MAX_INTERVAL_MS 2 * 60 * 1000
-#define EARLY_MARGIN_MS 1000
-#define LATE_MARGIN_MS 1000
-#define SYNC_SCAN_WINDOW_MS (EARLY_MARGIN_MS + LATE_MARGIN_MS)
+#define SYNC_CHECK_INTERVAL_BASE_MS 	1 * 60 * 1000	// Period to perform an at-home check 
+#define SYNC_REQ_ADV_BURST_DURATION 	K_MSEC(250) 	// Duration to send type 0x01 advertisment
+#define X_ANNOUNCED_S 					3				// Tells the scanner I am going to scan in 3 seconds
+#define MISSES_BEFORE_AWAY 				3				// If miss 3 HB check from the RPi, consider AWAY
+#define AWAY_BACKOFF_MAX_INTERVAL_MS	2 * 60 * 1000	// Linearly increase the scan interval while AWAY
+#define EARLY_MARGIN_MS 				500				// Guard time for scanning, plus the other half is the total scanning time
+#define LATE_MARGIN_MS 					500				// Guard time for scanning
+#define SYNC_SCAN_WINDOW_MS 			(EARLY_MARGIN_MS + LATE_MARGIN_MS)	// Total scanning time
+#define EXT_ADV_INTERVAL_MIN			BT_GAP_ADV_FAST_INT_MIN_2			// Min advertise interval for sensor extended advertisement 
+#define EXT_ADV_INTERVAL_MAX			192 			// Max advertise interval for sensor extended advertisement: 120ms / 0.625 = 192
+#define SYNC_ADV_INTERVAL_MIN			80				// Min advertise interval for time sync request advertisement: 50ms / 0.625 = 80
+#define SYNC_ADV_INTERVAL_MAX			84				// Max advertise interval for time sync request advertisement
 
 // Define BLE packet structure - Not used in real BLE packet
 typedef struct
@@ -246,8 +242,8 @@ static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN];
 // Legacy BLE advertisement parameters
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 	BT_LE_ADV_OPT_USE_IDENTITY, 	// Use identity MAC for advertisement
-	BT_GAP_ADV_FAST_INT_MIN_2,		// Min advertisement interval (min * 0.625)
-	BT_GAP_ADV_FAST_INT_MAX_2,		// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
+	SYNC_ADV_INTERVAL_MIN,			// Min advertisement interval (min * 0.625)
+	SYNC_ADV_INTERVAL_MAX,			// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
 	NULL							// not directed, pass NULL
 );
 
@@ -257,10 +253,12 @@ static struct bt_le_adv_param ext_adv_params_sensor = {
 	.sid = 0,
 	.secondary_max_skip = 0,
 	.options = (BT_LE_ADV_OPT_EXT_ADV | BT_LE_ADV_OPT_USE_IDENTITY),
-	.interval_min = BT_GAP_ADV_FAST_INT_MIN_2,
-	.interval_max = BT_GAP_ADV_FAST_INT_MAX_2,
+	.interval_min = EXT_ADV_INTERVAL_MIN,
+	.interval_max = EXT_ADV_INTERVAL_MAX,
 	.peer = NULL,
 };
+
+static struct bt_le_ext_adv *g_adv_sensor_ext_handle;	// Extended advertisement handler
 
 // Type 0x00: Main adv packet (hold encrypted sensor data)
 struct bt_data ad_sensor_agg[] = {
@@ -283,13 +281,11 @@ static const char *target_ap_addrs[] = {
 	"2C:CF:67:89:E0:5D",
 	"AA:BB:CC:DD:EE:FF",
 };
-static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);
 
-static atomic_t adv_running_flag = ATOMIC_INIT(0);						 // Use atomic for ISR/thread safe
-static atomic_t current_adv_type = ATOMIC_INIT(SENSOR_ADV_PAYLOAD_TYPE); // Track which type is active
-static volatile bool scan_active = false;
-
-static struct bt_le_ext_adv *g_adv_sensor_ext_handle;
+static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);			// Number of APs
+static atomic_t adv_running_flag = ATOMIC_INIT(0);						 	// Flag to indicate if any advertisement is running
+static atomic_t current_adv_type = ATOMIC_INIT(SENSOR_ADV_PAYLOAD_TYPE); 	// Flag to indicate current custom advertisement type
+static volatile bool scan_active = false;									// Flag to indicate if scanning 
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -382,6 +378,9 @@ static inline uint64_t ms_now(void)
 
 /* -------------------- State Management Functions -------------------- */
 
+/**
+ * @brief Create an extended advertisement set for the sensor
+ */
 static int create_sensor_ext_adv_set(void)
 {
 	int err;
@@ -625,6 +624,11 @@ static void start_sync_request_advertising(void)
 	}
 }
 
+/**
+ * @brief Stop the sync request advertisement burst.
+ *
+ * This function stops the BLE advertisement burst for the AWAY state.
+ */
 static void sync_adv_stop_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -650,6 +654,14 @@ static void sync_adv_stop_work_handler(struct k_work *work)
 	}
 }
 
+/**
+ * @brief Trigger the scan open work item.
+ *
+ * This function is called when the sync scan trigger work item is executed.
+ * It checks the current state and submits the scan open work if in the correct state.
+ *
+ * @param work Pointer to the work item.
+ */
 static void sync_scan_trigger_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -719,7 +731,7 @@ static void enter_state(device_state_t new_state)
 	case STATE_CHARGING:
 		LOG_DBG("Exiting CHARGING.");
 		break;
-	default: // STATE_INIT or others
+	default:
 		break;
 	}
 
@@ -1110,6 +1122,14 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 	}
 }
 
+/**
+ * @brief Check if the sync check timer has expired.
+ *
+ * This function is called when the sync check timer expires. It submits the
+ * sync check work to the workqueue if in the correct state.
+ *
+ * @param timer_id Pointer to the timer structure.
+ */
 static void sync_check_timer_expiry(struct k_timer *timer_id)
 {
 	ARG_UNUSED(timer_id);
@@ -1213,14 +1233,15 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 /* -------------------- Data Preparation -------------------- */
 
 /**
- * @brief Prepare a BLE packet from sensor data.
- *
- * This function encodes sensor data into a BLE packet format, ensuring that
- * the data fits within the specified buffer size.
- *
- * @param data Pointer to the sensor data structure.
- * @param buffer Pointer to the output buffer.
- * @param buffer_size Size of the output buffer.
+ * @brief Prepare the aggregated packet for transmission.
+ * 
+ * This function prepares the aggregated packet by encoding the sensor data
+ * 
+ * @param data Pointer to the BLE packet data.
+ * @param imu_batch Pointer to the IMU payload data.
+ * @param num_imu_samples Number of IMU samples in the batch.
+ * @param buffer Pointer to the buffer where the packet will be stored.
+ * @param buffer_size Size of the buffer.
  */
 void prepare_aggregated_packet(const ble_packet_t *data,
 							   const imu_payload_t *imu_batch,
@@ -1278,9 +1299,6 @@ void prepare_aggregated_packet(const ble_packet_t *data,
 	}
 
 	// Fill remaining space if num_imu_samples < MAX_IMU_SAMPLES_IN_PACKET to maintain fixed size for encryption
-	// This is important if the encryption expects a fixed size input.
-	// If encryption can handle variable (but known) length, this padding isn't strictly needed for encryption
-	// but fixed size simplifies things. Let's assume fixed size for now.
 	int remaining_imu_slots = MAX_IMU_SAMPLES_IN_PACKET - num_imu_samples;
 	if (remaining_imu_slots > 0)
 	{
