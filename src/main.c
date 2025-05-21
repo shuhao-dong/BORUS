@@ -279,10 +279,9 @@ static const struct bt_le_scan_param scan_param = {
 // Define the list of target AP addresses
 static const char *target_ap_addrs[] = {
 	"2C:CF:67:89:E0:5D",	// Public address of the built-in RPi controller 
-	"C2:0D:8E:96:F8:23",	// Random static address of the nrf53840dk
+	"C0:54:52:53:00:00",	// Random static address of the nrf53840dk
 };
 
-static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);			// Number of APs
 static atomic_t adv_running_flag = ATOMIC_INIT(0);						 	// Flag to indicate if any advertisement is running
 static atomic_t current_adv_type = ATOMIC_INIT(SENSOR_ADV_PAYLOAD_TYPE); 	// Flag to indicate current custom advertisement type
 static volatile bool scan_active = false;									// Flag to indicate if scanning 
