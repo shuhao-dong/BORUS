@@ -203,13 +203,13 @@ USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00"); // Define the USB MSC LUN
 
 /* -------------------- BLE Legacy Configurations -------------------- */
 
-#define SYNC_CHECK_INTERVAL_BASE_MS	2 * 60 * 1000
+#define SYNC_CHECK_INTERVAL_BASE_MS	1 * 60 * 1000
 #define SYNC_REQ_ADV_BURST_DURATION K_MSEC(250) // Duration to send advertisment
 #define X_ANNOUNCED_S 3					// Fixed time (seconds) announced until the next scan
 #define MISSES_BEFORE_AWAY 3
 #define AWAY_BACKOFF_MAX_INTERVAL_MS	2 * 60 * 1000
-#define EARLY_MARGIN_MS	1000
-#define LATE_MARGIN_MS	1000
+#define EARLY_MARGIN_MS	500
+#define LATE_MARGIN_MS	500
 #define SYNC_SCAN_WINDOW_MS	(EARLY_MARGIN_MS + LATE_MARGIN_MS)
 
 // Define BLE packet structure - Not used in real BLE packet
