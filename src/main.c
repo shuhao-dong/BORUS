@@ -184,7 +184,7 @@ static struct k_timer scan_close_timer; // For scan close
 #define SYNC_REQ_ADV_PAYLOAD_TYPE 				0x01			// Custom packet type 0x01: Time sync data
 #define MAX_IMU_SAMPLES_IN_PACKET 				14				// (251 - 9)/16: 251 bytes max - 9 bytes (env, nonce, etc.), divided by IMU (16 bytes)
 #define ADV_PAYLOAD_UPDATE_INTERVAL_MS 			140				// If sample at 100Hz (10ms) * 14 samples = 140 ms 
-#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	233				// 1+2+1+1+4+16*14: see prepare packet
+#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	229				// 1+2+1+1+16*14: see prepare packet
 #define AGGREGATED_ENC_ADV_PAYLOAD_LEN 			(1 + NONCE_LEN + AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)	// Custom type + Nonce + Payload
 #define NONCE_LEN 								8				// Size of the encryption nonce
 #define SYNC_REQ_PAYLOAD_LEN 					(1 + 2)			// Custom type + Time
@@ -201,7 +201,7 @@ USBD_DEFINE_MSC_LUN(NAND, "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
 /* -------------------- BLE Configurations -------------------- */
 
-#define SYNC_CHECK_INTERVAL_BASE_MS 	1 * 60 * 1000	// Period to perform an at-home check 
+#define SYNC_CHECK_INTERVAL_BASE_MS 	1 * 30 * 1000	// Period to perform an at-home check 
 #define SYNC_REQ_ADV_BURST_DURATION 	K_MSEC(250) 	// Duration to send type 0x01 advertisment
 #define X_ANNOUNCED_S 					3				// Tells the scanner I am going to scan in 3 seconds
 #define MISSES_BEFORE_AWAY 				3				// If miss 3 HB check from the RPi, consider AWAY
@@ -278,8 +278,8 @@ static const struct bt_le_scan_param scan_param = {
 
 // Define the list of target AP addresses
 static const char *target_ap_addrs[] = {
-	"2C:CF:67:89:E0:5D",
-	"AA:BB:CC:DD:EE:FF",
+	"2C:CF:67:89:E0:5D",	// Public address of the built-in RPi controller 
+	"C2:0D:8E:96:F8:23",	// Random static address of the nrf53840dk
 };
 
 static const size_t num_target_aps = ARRAY_SIZE(target_ap_addrs);			// Number of APs
@@ -427,33 +427,31 @@ static int setup_scan_filter(void)
 	bt_le_filter_accept_list_clear();
 
 	LOG_DBG("Populating BLE scan filter accept list:");
-	for (size_t i = 0; i < num_target_aps; i++)
-	{
-		// Convert string address to bt_addr_le_t.
-		// We assume the target APs use public addresses ("public").
-		// If they use Random Static, use "random" or the correct type string.
-		ret = bt_addr_le_from_str(target_ap_addrs[i], "public", &addr_le);
-		if (ret)
-		{
-			LOG_ERR("Invalid address string '%s': %d", target_ap_addrs[i], ret);
-			// Decide how to handle: return error, skip, etc.
-			return ret;
-		}
 
-		// Add the parsed address to the controller's filter accept list
-		ret = bt_le_filter_accept_list_add(&addr_le);
-		if (ret && ret != -EALREADY)
-		{
-			// Ignore if already added
-			LOG_ERR("Failed to add '%s' to accept list: %d", target_ap_addrs[i], ret);
-			// Decide how to handle: return error, skip, etc.
-			// If one fails, the list might be partially populated.
-		}
-		else if (ret == 0)
-		{
-			LOG_INF("Added %s to filter accept list.", target_ap_addrs[i]);
-		}
+	// Convert string address to bt_addr_le_t.
+	// We assume the target APs use public addresses ("public").
+	// If they use Random Static, use "random" or the correct type string.
+	ret = bt_addr_le_from_str(target_ap_addrs[0], "public", &addr_le);
+	if (ret)
+	{
+		LOG_ERR("Invalid address string '%s': %d", target_ap_addrs[0], ret);
+		// Decide how to handle: return error, skip, etc.
+		return ret;
 	}
+
+	// Add the parsed address to the controller's filter accept list
+	ret = bt_le_filter_accept_list_add(&addr_le);
+	if (ret && ret != -EALREADY)
+	{
+		// Ignore if already added
+		LOG_ERR("Failed to add '%s' to accept list: %d", target_ap_addrs[0], ret);
+		// Decide how to handle: return error, skip, etc.
+		// If one fails, the list might be partially populated.
+	}
+
+	ret = bt_addr_le_from_str(target_ap_addrs[1], "random", &addr_le);
+	ret = bt_le_filter_accept_list_add(&addr_le);
+
 	return 0;
 }
 
@@ -1284,10 +1282,6 @@ void prepare_aggregated_packet(const ble_packet_t *data,
 
 	// Number of IMU samples in this batch
 	buffer[offset++] = num_imu_samples; // 1 byte
-
-	// Batch Timestamp (overall timestamp for this packet)
-	sys_put_le32(data->timestamp, &buffer[offset]);
-	offset += 4; // 4 bytes
 
 	// IMU data batch (each imu_payload_t is 16 bytes: 6*int16_t + uint32_t timestamp)
 	for (uint8_t i = 0; i < num_imu_samples; i++)
