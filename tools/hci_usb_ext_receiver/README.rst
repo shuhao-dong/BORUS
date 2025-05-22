@@ -12,8 +12,11 @@ board it runs on (e.g. :ref:`nrf52840dk_nrf52840` supports both BLE and USB).
 Requirements
 ************
 
-* Bluetooth stack running on the host (e.g. BlueZ)
-* A board with Bluetooth and USB support in Zephyr
+* Bluetooth stack running on the host (e.g. BlueZ). Current firmware has been tested with BlueZ version 5.72, you can confirm your BlueZ version in terminal with::
+  
+  bluetoothctl --version
+
+* A board with Bluetooth and USB support in Zephyr. This firmware has been tested with nrf52840dk_nrf52840. 
 
 Building and Running
 ********************
@@ -60,3 +63,12 @@ The sample has been tested with nRF52840DK flashed with some extra configuration
   CONFIG_BT_CTLR_RX_BUFFERS=9
 
 We used the experimental link layer (LL) from Nordic to achieve this. Softdevice LL does not work with RPi when tested. 
+
+On Linux Side
+*************
+
+Once plugged in, you should check first if the controller is recognised by Linux::
+  
+  sudo btmon -i hci1
+
+This should return your controller information and select the btmon to run on hci1. 
