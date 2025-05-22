@@ -288,11 +288,6 @@ static volatile bool scan_active = false;									// Flag to indicate if scannin
 
 /* -------------------- IMU Configurations -------------------- */
 
-#define IMU_ACC_ODR_HIGH BMI270_ACC_ODR_50
-#define IMU_ACC_ODR_LOW BMI270_ACC_ODR_25
-#define IMU_GYR_ODR_HIGH BMI270_GYR_ODR_50
-#define IMU_GYR_ODR_LOW BMI270_GYR_ODR_25
-
 bmi270_acc_config_t bmi270_acc_config_high = {
 	.acc_bwp = BMI270_ACC_BWP_NORM_AVG4,
 	.acc_odr = BMI270_ACC_ODR_100,
