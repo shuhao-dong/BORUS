@@ -70,41 +70,6 @@ Use with Extended Advertisement
 Extended advertisement is a new feature introduced since Bluetooth 5.0. Before implementing it, one has to make sure that the controller on both receiver
 and the transimitter support extended advertisement. Most commercially available USB Bluetooth dongles does NOT support this function.
 
-The sample has been tested with nRF52840DK flashed with `hci_usb <https://github.com/zephyrproject-rtos/zephyr/tree/main/samples/bluetooth/hci_usb>`_ with
-some extra configurations as below::
 
-  CONFIG_BT=y
-  CONFIG_BT_HCI_RAW=y
-  CONFIG_BT_HCI=y
-  CONFIG_BT_LL_SOFTDEVICE=n
-  CONFIG_BT_LL_SW_SPLIT=y
-  CONFIG_BT_EXT_ADV=y
-  CONFIG_BT_OBSERVER=y
-  CONFIG_BT_CENTRAL=y
-  CONFIG_BT_PERIPHERAL=y
-
-  CONFIG_BT_CTLR_ADV_EXT=y
-  CONFIG_BT_CTLR_PHY_CODED=y
-  CONFIG_BT_CTLR_PHY_2M=y
-
-  CONFIG_USB_DEVICE_STACK=y
-  CONFIG_USB_DEVICE_PID=0x000B
-  CONFIG_USB_DEVICE_BLUETOOTH=y
-  CONFIG_USB_DEVICE_BLUETOOTH_VS_H4=n
-  CONFIG_USB_DEVICE_INITIALIZE_AT_BOOT=n
-
-
-  CONFIG_SERIAL=n
-  CONFIG_CONSOLE=n
-  CONFIG_UART_CONSOLE=n
-
-  CONFIG_BT_BUF_CMD_TX_COUNT=10
-
-  CONFIG_BT_EXT_SCAN_BUF_SIZE=1650
-  CONFIG_BT_BUF_EVT_RX_COUNT=16
-  CONFIG_BT_CTLR_SCAN_DATA_LEN_MAX=1650
-  CONFIG_BT_CTLR_RX_BUFFERS=9
-
-We used the experimental link layer (LL) from Nordic to achieve this. Softdevice LL does not work with RPi when tested. 
 
 You will also need to compile and run a programme on RPi to process the extended packet, see `here <https://github.com/shuhao-dong/ble-scan-advertise/tree/feature/ext-scan-sync>`_ for more details. 
