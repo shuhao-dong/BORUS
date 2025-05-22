@@ -8,11 +8,15 @@
  * to the external flash using littlefs and a context awareness state change.
  *
  * Author: Shuhao Dong <shuhao.dong@bristol.ac.uk>
- * Version: v0.1.0
+ * Version: v0.2.0
  *
  * Date: 16/04/2025
  *
- * TBD: BLE encryption, BLE Extended adv
+ * New feature introduced since v0.1.0
+ * 
+ * 	- Added data encryption for BLE sensor data pakcet (type 0x00) with self-built Nonce
+ * 	- Added time sync request packet (type 0x01) to achieve at-home check
+ *  - Implemented extended advertisement for sensor data packet to allow high sample rate
  */
 
 #include <stdio.h>
