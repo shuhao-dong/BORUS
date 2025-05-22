@@ -72,4 +72,4 @@ and the transimitter support extended advertisement. Most commercially available
 
 
 
-You will also need to compile and run a programme on RPi to process the extended packet, see `here <https://github.com/shuhao-dong/ble-scan-advertise/tree/feature/ext-scan-sync>`_ for more details. 
+You will also need to compile and run a programme on RPi to process the extended packet, see tools/hci_usb_ext_receiver for more details. 
