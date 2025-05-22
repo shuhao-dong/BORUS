@@ -71,4 +71,5 @@ Once plugged in, you should check first if the controller is recognised by Linux
   
   sudo btmon -i hci1
 
-This should return your controller information and select the btmon to run on hci1. 
+This should return your controller information and select the btmon to run on hci1. You will need to run `this <https://github.com/shuhao-dong/ble-scan-advertise/tree/feature/ext-scan-sync>`_ 
+on your Linux machine to receive the extended advertisement packets. 
