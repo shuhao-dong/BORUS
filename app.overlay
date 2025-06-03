@@ -1,9 +1,9 @@
 &spi3{
-    bmi270: spi-dev-bmi270@0 {
+    bmi270: spi-dev-bmi270@1 {
 		compatible = "bosch,bmi270";
 		status = "okay";
 		spi-max-frequency = <8000000>;
-		reg = <0>;
+		reg = <1>;
 		irq-gpios=<&gpio0 23 GPIO_ACTIVE_HIGH>; 
 	};
 };
