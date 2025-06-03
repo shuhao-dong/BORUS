@@ -205,7 +205,7 @@ USBD_DEFINE_MSC_LUN(NOR, "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
 /* -------------------- BLE Configurations -------------------- */
 
-#define SYNC_CHECK_INTERVAL_BASE_MS 	1 * 30 * 1000	// Period to perform an at-home check 
+#define SYNC_CHECK_INTERVAL_BASE_MS 	1 * 60 * 1000	// Period to perform an at-home check 
 #define SYNC_REQ_ADV_BURST_DURATION 	K_MSEC(250) 	// Duration to send type 0x01 advertisment
 #define X_ANNOUNCED_S 					3				// Tells the scanner I am going to scan in 3 seconds
 #define MISSES_BEFORE_AWAY 				3				// If miss 3 HB check from the RPi, consider AWAY
@@ -215,8 +215,8 @@ USBD_DEFINE_MSC_LUN(NOR, "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 #define SYNC_SCAN_WINDOW_MS 			(EARLY_MARGIN_MS + LATE_MARGIN_MS)	// Total scanning time
 #define EXT_ADV_INTERVAL_MIN			BT_GAP_ADV_FAST_INT_MIN_2			// Min advertise interval for sensor extended advertisement 
 #define EXT_ADV_INTERVAL_MAX			192 			// Max advertise interval for sensor extended advertisement: 120ms / 0.625 = 192
-#define SYNC_ADV_INTERVAL_MIN			80				// Min advertise interval for time sync request advertisement: 50ms / 0.625 = 80
-#define SYNC_ADV_INTERVAL_MAX			84				// Max advertise interval for time sync request advertisement
+#define SYNC_ADV_INTERVAL_MIN			160				// Min advertise interval for time sync request advertisement: 100ms / 0.625 = 160
+#define SYNC_ADV_INTERVAL_MAX			164				// Max advertise interval for time sync request advertisement
 
 // Define BLE packet structure - Not used in real BLE packet
 typedef struct
@@ -572,10 +572,12 @@ static void start_sensor_advertising_ext(void)
 	{
 		atomic_set(&adv_running_flag, 1);
 		atomic_set(&current_adv_type, SENSOR_ADV_PAYLOAD_TYPE); // Mark as extended sensor type
-		if (ret == -EALREADY)
+		if (ret == -EALREADY){
 			LOG_DBG("Sensor Ext Adv already started/updated.");
-		else
+		}
+		else {
 			LOG_DBG("Sensor Ext Adv started/updated.");
+		}
 	}
 }
 

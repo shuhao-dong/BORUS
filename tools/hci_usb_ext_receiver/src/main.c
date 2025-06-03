@@ -8,6 +8,11 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/usb/usbd.h>
+#include <zephyr/drivers/gpio.h>
+
+#define LED1_NODE DT_ALIAS(led1_green)
+
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 #include <sample_usbd.h>
@@ -40,6 +45,21 @@ int main(void)
 		return 0;
 	}
 
+	if (!gpio_is_ready_dt(&led)) {
+		return 0; 
+	}
+
+	ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
+	if (ret < 0) {
+		return 0; 
+	}
+
+	for (int i = 0; i < 5; i++)
+	{
+		gpio_pin_toggle_dt(&led);
+		k_msleep(500); 
+	}
+	
 	printk("Bluetooth over USB sample\n");
 	return 0;
 }
