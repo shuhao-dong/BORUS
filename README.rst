@@ -17,8 +17,9 @@ tested on Nordic Thingy53. Helper tools are included.
 Requirements
 ************
 
-You must use nRF Connect SDK and toolchain version v2.6.0 or above in order to better 
-support the partition manager and sysbuild.
+You must use nRF Connect SDK and toolchain version v2.9.1 or above in order to better 
+support the partition manager and sysbuild. This project is tested with NCS 2.9.1. Note that is you are using a version below, you have to change app.overlay, 
+speficially deleting the msc_disk0 node and the parent node of it. 
 
 For board information, please refer to the datasheet of `Thingy53 <https://www.nordicsemi.com/Products/Development-hardware/Nordic-Thingy-53>`_
 
