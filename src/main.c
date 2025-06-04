@@ -1057,7 +1057,6 @@ static void usb_connect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
 	LOG_DBG("Workqueue: USB connected, entering CHARGING");
-	k_msleep(500);
 	if (atomic_get(&current_state) != STATE_CHARGING)
 	{
 		enter_state(STATE_CHARGING);
