@@ -3,8 +3,7 @@ littlefs_storage:
   address: 0x120000
   size: 0x6e0000
   label: "lfs_storage"
-  affiliation:
-  - disk
+  affiliation: disk
   extra_params:
     disk_cache_size: 0x1000
     disk_name: NOR

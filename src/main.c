@@ -201,7 +201,7 @@ static struct k_timer scan_close_timer; // For scan close
 #define LOG_FILE_PATH "/lfs1/imu_log.bin" 				// File path for the log file
 #define LFS_MOUNT_POINT "/lfs1"			  				// Mount point for the file system
 
-USBD_DEFINE_MSC_LUN(NOR, "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
+USBD_DEFINE_MSC_LUN(NOR, "NOR", "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
 /* -------------------- BLE Configurations -------------------- */
 
