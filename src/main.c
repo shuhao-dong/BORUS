@@ -886,10 +886,10 @@ static void queue_initial_battery_level(void)
 
 	int soc_temp = temperature_measure();
 
-	unsigned int batt_pptt = battery_level_pptt(batt_mV, levels);
+	uint8_t batt_8bit = (uint8_t)(batt_mV / 20); 
 
 	sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
-	msg.payload.batt.battery = (uint8_t)(batt_pptt / 100);
+	msg.payload.batt.battery = batt_8bit;
 	msg.payload.batt.timestamp = k_uptime_get_32();
 	msg.payload.batt.soc_temp = soc_temp; 
 
@@ -1068,9 +1068,9 @@ static void battery_timeout_work_handler(struct k_work *work)
 
 	if (batt_mV >= 0)
 	{ 	// Check for valid reading
-		unsigned int bat_pptt = battery_level_pptt(batt_mV, levels);
+		uint8_t batt_8bit = (uint8_t)(batt_mV / 20); 
 		sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
-		msg.payload.batt.battery = (uint8_t)(bat_pptt / 100);
+		msg.payload.batt.battery = batt_8bit;
 		msg.payload.batt.timestamp = k_uptime_get_32();
 		msg.payload.batt.soc_temp = soc_temp; 
 
