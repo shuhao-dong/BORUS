@@ -55,8 +55,9 @@
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/random/random.h>
+#include <zephyr/bluetooth/hci_vs.h>
 
-LOG_MODULE_REGISTER(THINGY, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
 /* -------------------- Watchdog Timer --------------------*/
 
@@ -131,7 +132,7 @@ typedef enum
 {
 	SENSOR_MSG_TYPE_IMU,
 	SENSOR_MSG_TYPE_ENVIRONMENT,
-	SENSOR_MSG_TYPE_BATTERY,
+	SENSOR_MSG_TYPE_MONITOR,
 } sensor_msg_type_t;
 
 // Define payload structures: imu, environment, battery
@@ -154,7 +155,8 @@ typedef struct
 {
 	uint8_t battery;
 	uint32_t timestamp;
-} battery_payload_t;
+	int8_t soc_temp; 
+} monitor_payload_t;
 
 // Unified message structure for message queue
 typedef struct
@@ -164,7 +166,7 @@ typedef struct
 	{
 		imu_payload_t imu;
 		environment_payload_t env;
-		battery_payload_t batt;
+		monitor_payload_t batt;
 	} payload;
 } sensor_message_t;
 
@@ -190,7 +192,7 @@ static struct k_timer scan_close_timer; // For scan close
 #define SYNC_REQ_ADV_PAYLOAD_TYPE 				0x01			// Custom packet type 0x01: Time sync data
 #define MAX_IMU_SAMPLES_IN_PACKET 				14				// (251 - 9)/16: 251 bytes max - 9 bytes (env, nonce, etc.), divided by IMU (16 bytes)
 #define ADV_PAYLOAD_UPDATE_INTERVAL_MS 			140				// If sample at 100Hz (10ms) * 14 samples = 140 ms 
-#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	229				// 1+2+1+1+16*14: see prepare packet
+#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	230				// 1+2+1+1+1+16*14: see prepare packet
 #define AGGREGATED_ENC_ADV_PAYLOAD_LEN 			(1 + NONCE_LEN + AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)	// Custom type + Nonce + Payload
 #define NONCE_LEN 								8				// Size of the encryption nonce
 #define SYNC_REQ_PAYLOAD_LEN 					(1 + 2)			// Custom type + Time
@@ -228,6 +230,7 @@ typedef struct
 	int16_t imu_data[6];
 	uint32_t timestamp;
 	uint8_t battery;
+	int8_t soctemp; 
 } ble_packet_t;
 
 // Buffer for dynamic manufacturer data in advertisement
@@ -362,6 +365,36 @@ static struct fs_mount_t lfs_mount_p = {
 	.storage_dev = (void *)PM_LITTLEFS_STORAGE_ID,
 	.mnt_point = LFS_MOUNT_POINT,
 };
+
+/* -------------------- SoC Temperature Measurement -------------------- */
+
+int temperature_measure(void)
+{
+
+	int err = 0;
+	struct net_buf *buf, *rsp = NULL;
+	struct bt_hci_rp_vs_read_chip_temp *cmd_params;
+	struct bt_hci_rp_vs_read_chip_temp *rsp_params;
+
+	buf = bt_hci_cmd_create(BT_HCI_OP_VS_READ_CHIP_TEMP, sizeof(*cmd_params));
+	if (!buf) {
+		LOG_ERR("Could not allocate command buffer");
+		return -ENOMEM;
+	}
+
+	cmd_params = net_buf_add(buf, sizeof(*cmd_params));
+
+	err = bt_hci_cmd_send_sync(BT_HCI_OP_VS_READ_CHIP_TEMP, buf, &rsp);
+	if (err) {
+		LOG_ERR("bt_hci_cmd_send_sync failed (err: %d)",err);
+		return err;
+	}
+
+	rsp_params = (void *) rsp->data;
+	net_buf_unref(rsp);
+
+	return rsp_params->temps;
+}
 
 /* -------------------- Home Detection -------------------- */
 
@@ -851,11 +884,14 @@ static void queue_initial_battery_level(void)
 		return;
 	}
 
+	int soc_temp = temperature_measure();
+
 	unsigned int batt_pptt = battery_level_pptt(batt_mV, levels);
 
-	sensor_message_t msg = {.type = SENSOR_MSG_TYPE_BATTERY};
+	sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
 	msg.payload.batt.battery = (uint8_t)(batt_pptt / 100);
 	msg.payload.batt.timestamp = k_uptime_get_32();
+	msg.payload.batt.soc_temp = soc_temp; 
 
 	if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 	{
@@ -863,7 +899,7 @@ static void queue_initial_battery_level(void)
 	}
 	else
 	{
-		LOG_INF("Step 4.2: Queued initial battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
+		LOG_INF("Step 4.2: Queued initial monitor info, battery: %u%% (%d mV), SoC @ %d degreeC", msg.payload.batt.battery, batt_mV, soc_temp);
 	}
 }
 
@@ -1028,12 +1064,15 @@ static void battery_timeout_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 
 	int batt_mV = battery_sample();
+	int soc_temp = temperature_measure(); 
+
 	if (batt_mV >= 0)
-	{ // Check for valid reading
+	{ 	// Check for valid reading
 		unsigned int bat_pptt = battery_level_pptt(batt_mV, levels);
-		sensor_message_t msg = {.type = SENSOR_MSG_TYPE_BATTERY};
+		sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
 		msg.payload.batt.battery = (uint8_t)(bat_pptt / 100);
 		msg.payload.batt.timestamp = k_uptime_get_32();
+		msg.payload.batt.soc_temp = soc_temp; 
 
 		if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 		{
@@ -1280,6 +1319,9 @@ void prepare_aggregated_packet(const ble_packet_t *data,
 
 	/* Battery percentage */
 	buffer[offset++] = data->battery; // 1 byte
+
+	// SoC temperature 
+	buffer[offset++] = data->soctemp; // 1 byte
 
 	// Number of IMU samples in this batch
 	buffer[offset++] = num_imu_samples; // 1 byte
@@ -1663,15 +1705,17 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 			case SENSOR_MSG_TYPE_ENVIRONMENT:
 				current_sensor_state.temperature = received_msg.payload.env.temperature;
 				current_sensor_state.pressure = received_msg.payload.env.pressure;
-				// Use newest timestamp if relevant
+		
 				if (received_msg.payload.env.timestamp > current_sensor_state.timestamp)
 				{
 					current_sensor_state.timestamp = received_msg.payload.env.timestamp;
 				}
 				new_data_for_adv = true;
 				break;
-			case SENSOR_MSG_TYPE_BATTERY:
+			case SENSOR_MSG_TYPE_MONITOR:
 				current_sensor_state.battery = received_msg.payload.batt.battery;
+				current_sensor_state.soctemp = received_msg.payload.batt.soc_temp; 
+
 				if (received_msg.payload.batt.timestamp > current_sensor_state.timestamp)
 				{
 					current_sensor_state.timestamp = received_msg.payload.batt.timestamp;
@@ -2051,9 +2095,6 @@ int main(void)
 	}
 	LOG_INF("Step 4.1: Enable battery voltage measurement");
 
-	// Push initial battery pct to queue
-	queue_initial_battery_level();
-
 	struct fs_mount_t *mp = &lfs_mount_p;
 
 	ret = fs_mount(mp);
@@ -2091,6 +2132,9 @@ int main(void)
 	}
 
 	LOG_INF("Step 6: Bluetooth enabled");
+
+	// Push initial battery pct to queue
+	queue_initial_battery_level();
 
 	ret = create_sensor_ext_adv_set();
 	if (ret)
@@ -2225,7 +2269,7 @@ int main(void)
 		return -1;
 	}
 
-	LOG_INF("Step 11: Watchdog started (timeout %d ms)", WDT_TIMEOUT_MS);
+	LOG_INF("Step 11: Watchdog started (timeout %d ms)", WDT_TIMEOUT_MS); 
 
 	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
 	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
