@@ -6,12 +6,37 @@
 		reg = <1>;
 		irq-gpios=<&gpio0 23 GPIO_ACTIVE_HIGH>; 
 	};
-};
 
-// Choose the existing cdc acm node for mcumgr 
-/ {
-	chosen {
-		zephyr,uart-mcumgr = &cdc_acm_uart;
-		nordic,pm-ext-flash = &mx25r64;
+	adxl362: spi-dev-adxl362@0 {
+		compatible = "adi,adxl362";
+		status = "disabled"; 
+		spi-max-frequency = <8000000>;
+		reg = <0>;
+		int1-gpios = <&gpio0 19 0>;
 	};
 };
+
+&mx25r64 {
+	partitions {
+		compatible = "fixed-partitions";
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		littlefs_storage: partition@120000 {
+			label = "lfs_storage";
+			reg = <0x00120000 0x006E0000>; 
+		};
+	};
+};
+
+/ {
+	msc_disk0: msc_disk0 {
+		compatible = "zephyr,flash-disk";
+		partition = <&littlefs_storage>;
+		disk-name = "NOR";
+		cache-size = <4096>; 
+	};
+};
+
+
