@@ -17,6 +17,8 @@
  * 	- Added data encryption for BLE sensor data pakcet (type 0x00) with self-built Nonce
  * 	- Added time sync request packet (type 0x01) to achieve at-home check
  *  - Implemented extended advertisement for sensor data packet to allow high sample rate
+ * 
+ * This is only for torus53 board
  */
 
 #include <stdio.h>
