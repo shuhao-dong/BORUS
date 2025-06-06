@@ -346,14 +346,6 @@ static const struct spi_dt_spec bmi270_spi = SPI_DT_SPEC_GET(DT_NODELABEL(bmi270
 // BMP390 (currently BME688 but can replace later)
 const struct device *const dev = DEVICE_DT_GET_ONE(bosch_bme680);
 
-/* -------------------- Discharge curve -------------------- This needs to be changed!! */
-
-static const struct battery_level_point levels[] = {
-	{10000, 3950},
-	{625, 3550},
-	{0, 3100},
-};
-
 /* -------------------- LittleFS Mount Configuration -------------------- */
 
 #define LOG_SYNC_THRESHOLD 15000 // Record to log before fs_sync, this tolerates 5-min data missing
@@ -2054,16 +2046,16 @@ int main(void)
 	};
 	bmi270_conf_interrupt(&bmi270_ctx, &int1_config, 1);
 
-	bmi270_interrupt_config_t int1_feature_config = {
-		.input_en = 0,
-		.lvl = 1,
-		.odb = 0,
-		.output_en = 1,
-		.interrupt_type.feature_int = NO_MOTION_OUT,
-		.use_data = 0,
-		.int_latch = 0,
-	};
-	bmi270_conf_interrupt(&bmi270_ctx, &int1_feature_config, 1);
+	// bmi270_interrupt_config_t int1_feature_config = {
+	// 	.input_en = 0,
+	// 	.lvl = 1,
+	// 	.odb = 0,
+	// 	.output_en = 1,
+	// 	.interrupt_type.feature_int = NO_MOTION_OUT,
+	// 	.use_data = 0,
+	// 	.int_latch = 0,
+	// };
+	// bmi270_conf_interrupt(&bmi270_ctx, &int1_feature_config, 1);
 
 	bmi270_no_motion_config_t no_motion_param = {
 		.duration = 3,

@@ -105,6 +105,9 @@ extern const uint8_t bmi270_config_file[];
 #define BMI270_TEMP_EN_ON                   UINT8_C(1 << 3) // Enable the temperature sensor
 #define BMI270_TEMP_EN_OFF                  UINT8_C(0 << 3) // Disable the temperature sensor 
 
+
+/* Non-volatile configuration register                                */
+#define BMI270_NV_CONF_SPI_EN     BIT(4)   /* Lock primary IF to SPI  */
 /* -------------------------------------- Acc Configurations ------------------------------------------------- */
 
 typedef enum _acc_odr {
@@ -304,13 +307,17 @@ typedef struct {
 } bmi270_interrupt_config_t;
 
 typedef struct {
-    uint8_t duration;       // Duration when threshold condition is met. Range is 0 to 163 sec.
+    uint16_t duration;       // Duration when threshold condition is met. Range is 0 to 163 sec.
     bool select_x;          // Select this feature on x axis
     bool select_y;          // Select this feature on y axis
     bool select_z;          // Select this feature on z axis 
     uint16_t threshold;     // Slop threshold value for no-motion detection. Range from 0 to 1000 mg
     bool enable;            // Enable/disable the feature 
 } bmi270_no_motion_config_t; 
+
+typedef struct {
+
+} bmi270_any_motion_config_t;
 
 
 /* --------------------------------------- Prototyes ----------------------------------------------------- */
@@ -323,8 +330,9 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
 int bmi270_read_imu(BMI270_Context *ctx, BMI270_IMU_Value *value, uint8_t acc_range, uint8_t gyr_range); 
 int bmi270_conf_interrupt(BMI270_Context *ctx, bmi270_interrupt_config_t *config, uint8_t pin); 
 int bmi270_conf_no_motion(BMI270_Context *ctx, bmi270_no_motion_config_t *config); 
+int bmi270_conf_any_motion(BMI270_Context *ctx, bmi270_no_motion_config_t *config); 
 int bmi270_write_command(BMI270_Context *ctx, BMI270_cmd *cmd);
-int bmi270_read_int_status(BMI270_Context *ctx);
+uint16_t bmi270_read_int_status(BMI270_Context *ctx);
 uint8_t bmi270_read_fifo_length(BMI270_Context *ctx); 
 void bmi270_read_no_motion_config(BMI270_Context *ctx); 
 
