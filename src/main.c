@@ -56,6 +56,7 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/random/random.h>
 #include <zephyr/bluetooth/hci_vs.h>
+#include <zephyr/smf.h>
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
@@ -122,8 +123,52 @@ static struct k_work sync_check_work;
 static struct k_work_delayable sync_adv_stop_work;
 static struct k_work_delayable sync_scan_trigger_work;	
 
-// Use atomic type for state changes between threads/ISRs
-static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
+struct app_ctx {
+	struct smf_ctx smf;
+	atomic_t flags;
+	uint8_t missed_sync;
+	uint32_t sync_interval_ms;
+	bool scan_active;
+};
+
+static struct app_ctx app; 
+
+static void init_entry(void *h), init_run(void *h), init_exit(void *h);
+static void home_entry(void *h), home_run(void *h), home_exit(void *h);
+static void away_entry(void *h), away_run(void *h), away_exit(void *h);
+static void charging_entry(void *h), charging_run(void *h), charging_exit(void *h);
+
+static const struct smf_state init_state = {
+	.entry = init_entry,
+	.exit = init_exit,
+	.run = init_run,
+};
+
+static const struct smf_state home_state = {
+	.run = home_run,
+	.entry = home_entry,
+	.exit = home_exit,
+};
+
+static const struct smf_state away_state = {
+	.run = away_run,
+	.entry = away_entry,
+	.exit = away_exit,
+};
+
+static const struct smf_state charging_state = {
+	.run = charging_run,
+	.entry = charging_entry,
+	.exit = charging_exit,
+}; 
+
+static const struct smf_state * const state_table[4] = {
+	[STATE_INIT] = &init_state,
+	[STATE_HOME_ADVERTISING] = &home_state,
+	[STATE_AWAY_LOGGING] = &away_state,
+	[STATE_CHARGING] = &charging_state, 
+};
+
 
 /* -------------------- Message Queue for Sensor Data -------------------- */
 
@@ -701,6 +746,66 @@ static void sync_scan_trigger_handler(struct k_work *work)
 	{
 		LOG_WRN("Sync Scan Trigger ran but state is %d", state);
 	}
+}
+
+static void init_entry(void *h)
+{
+	ARG_UNUSED(h);
+	LOG_INF("Entering INIT");
+	stop_all_advertising(); 
+
+	if (scan_active)
+	{
+		bt_le_scan_stop();
+		scan_active = false;
+	}
+
+	k_timer_stop(&scan_close_timer);
+	k_timer_stop(&sync_check_timer);
+}
+
+static void init_run(void *h){ARG_UNUSED(h);}
+static void init_exit(void *h){ARG_UNUSED(h);}
+
+static void home_entry(void *h)
+{
+	struct app_ctx *c = h;
+	LOG_INF("Entering HOME");
+	set_imu_rate(true);
+	c->missed_sync = 0;
+	c->sync_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
+	start_sensor_advertising_ext();
+	k_timer_start(&sync_check_timer, K_MSEC(c->sync_interval_ms), K_MSEC(c->sync_interval_ms));
+}
+
+static void home_run(void *h)
+{
+	struct app_ctx *c = h;
+
+	/* FLAG_SYNC_MISSED is set by sync_chech_timer ISR */
+	if (atomic_test_and_clear_bit(&c->flags, FLAG_SYNC_MISSED))
+	{
+		if (++c->missed_sync > MAX_SYNC_MISSES)
+		{
+			smf_set_state(SMF_CTX(c), &away_state);
+			return; 
+		}
+		
+	}
+	
+}
+
+static void home_exit(void *h)
+{
+	stop_all_advertising();
+	k_timer_stop(&sync_check_timer);
+	k_timer_stop(&scan_close_timer);
+	if (scan_active)
+	{
+		bt_le_scan_stop();
+		scan_active = false;
+	}
+	LOG_DBG("Leaving HOME"); 
 }
 
 /**
