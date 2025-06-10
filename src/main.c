@@ -209,7 +209,7 @@ typedef struct
 } sensor_message_t;
 
 // Define the message queue
-K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 24, 4);
+K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 16, 4);
 
 /* -------------------- Semaphores for Interrupts -------------------- */
 
@@ -224,7 +224,7 @@ static struct k_timer scan_close_timer; // For scan close
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 					1000 			// Read environment at 1 Hz
+#define BMP390_READ_INTERVAL 					60000 			// Read environment at 1 Hz
 #define BATTERY_READ_INTERVAL 					K_MINUTES(15)	// Every 15 minute read one battery voltage
 #define SENSOR_ADV_PAYLOAD_TYPE 				0x00			// Custom packet type 0x00: Sensor data
 #define SYNC_REQ_ADV_PAYLOAD_TYPE 				0x01			// Custom packet type 0x01: Time sync data
@@ -729,6 +729,10 @@ static void sync_scan_trigger_handler(struct k_work *work)
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 					struct net_buf_simple *buf)
 {
+	char addr_str[BT_ADDR_LE_STR_LEN];
+	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
+	LOG_INF("Heartbeat from %s, RSSI=%d", addr_str, rssi);
+
 	if (smf_current_state_get(SMF_CTX(&app)) == &states[STATE_CHARGING])
 	{
 		/* ignore all packets while charging */
@@ -767,7 +771,7 @@ static void queue_initial_battery_level(void)
 	}
 	else
 	{
-		LOG_INF("Step 4.2: Queued initial monitor info, battery: %u%% (%d mV), SoC @ %d degreeC", msg.payload.batt.battery, batt_mV, soc_temp);
+		LOG_INF("Step 4.2: Queued initial monitor info, battery @ %d mV, SoC @ %d degreeC", batt_mV, soc_temp);
 	}
 }
 
