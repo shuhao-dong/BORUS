@@ -81,20 +81,17 @@ static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
 // Stack sizes
 #define BMI270_HANDLER_STACKSIZE 	1024
 #define BMP390_HANDLER_STACKSIZE 	1024
-#define BLE_LOGGER_THREAD_STACKSIZE 4096
-#define SCANNER_THREAD_STACKSIZE 	1024
+#define BLE_LOGGER_THREAD_STACKSIZE 2048
 
 // Priorities (Lower number = higher priority)
 #define BMI270_HANDLER_PRIORITY 5 	// Highest sensor priority due to higher sample rate
 #define BMP390_HANDLER_PRIORITY 6 	// Medium sensor priority due to lower sample rate
 #define BLE_THREAD_PRIORITY 	7	// Lower priority tasks for BLE and logging
-#define SCANNER_THREAD_PRIORITY 7 	// Lower priority tasks for scan AP heartbeat
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
 K_THREAD_STACK_DEFINE(bmp390_handler_stack_area, BMP390_HANDLER_STACKSIZE);
 K_THREAD_STACK_DEFINE(ble_logger_stack_area, BLE_LOGGER_THREAD_STACKSIZE);
-K_THREAD_STACK_DEFINE(scanner_stack_area, SCANNER_THREAD_STACKSIZE);
 
 // Thread Control Blocks
 static struct k_thread bmi270_handler_thread_data;
@@ -1786,7 +1783,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 						}
 						else
 						{
-							LOG_DBG("Updated ADV with %u IMU samples.", imu_batch_count);
+							// LOG_DBG("Updated ADV with %u IMU samples.", imu_batch_count);
 						}
 					}
 				}
