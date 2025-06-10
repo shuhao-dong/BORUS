@@ -209,7 +209,7 @@ typedef struct
 } sensor_message_t;
 
 // Define the message queue
-K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 32, 4);
+K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 24, 4);
 
 /* -------------------- Semaphores for Interrupts -------------------- */
 
@@ -423,16 +423,6 @@ int temperature_measure(void)
 	net_buf_unref(rsp);
 
 	return rsp_params->temps;
-}
-
-/* -------------------- Home Detection -------------------- */
-
-/**
- * @brief Get the current time in milliseconds.
- */
-static inline uint64_t ms_now(void)
-{
-	return k_uptime_get();
 }
 
 /* -------------------- State Management Functions -------------------- */
