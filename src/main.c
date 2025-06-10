@@ -448,6 +448,12 @@ static inline uint64_t ms_now(void)
 
 /* -------------------- State Management Functions -------------------- */
 
+static inline device_state_t smf_state_id(void)
+{
+	return (device_state_t)(app.smf.current - state_table);
+}
+#define current_state (*(volatile device_state_t *)&smf_state_id)
+
 /**
  * @brief Create an extended advertisement set for the sensor
  */
@@ -808,6 +814,76 @@ static void home_exit(void *h)
 	LOG_DBG("Leaving HOME"); 
 }
 
+static void away_entry(void *h)
+{
+	struct app_ctx *c = h;
+	LOG_INF("Entering AWAY");
+	set_imu_rate(false);
+	stop_all_advertising();
+	uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
+	k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(c->sync_interval_ms));
+}
+
+static void away_exit(void *h)
+{
+	k_timer_stop(&sync_check_timer);
+	k_work_cancel_delayable(&sync_adv_stop_work);
+	k_work_cancel_delayable(&sync_scan_trigger_work);
+	stop_all_advertising();
+	k_timer_stop(&scan_close_timer);
+	if (scan_active)
+	{
+		bt_le_scan_stop();
+		scan_active = false;
+	}
+	LOG_DBG("Leaving AWAY"); 
+}
+
+static void away_run(void *h)
+{
+	struct app_ctx *c = h;
+
+	if (atomic_test_and_clear_bit(&c->flags, FLAG_SYNC_CHECK_DONE))
+	{
+		c->sync_interval_ms = MIN(c->sync_interval_ms * 2, AWAY_BACKOFF_MAX_INTERVAL_MS);
+		k_timer_start(&sync_check_timer, K_MSEC(c->sync_interval_ms), K_MSEC(c->sync_interval_ms));
+	}
+
+	if (atomic_test_and_clear_bit(&c->flags, FLAG_HOME_FOUND))
+	{
+		smf_set_state(SMF_CTX(c), &home_state);
+	}
+}
+
+static void charging_entry(void *h)
+{
+	LOG_INF("Entering CHARGING");
+	stop_all_advertising();
+	k_timer_stop(&sync_check_timer);
+	k_work_cancel_delayable(&sync_adv_stop_work);
+	k_work_cancel_delayable(&sync_scan_trigger_work);
+	if (scan_active)
+	{
+		bt_le_scan_stop();
+		scan_active = false;
+	}
+	k_timer_stop(&scan_close_timer);
+}
+
+static void charging_exit(void *h)
+{
+	LOG_DBG("Leaving CHARGING");
+}
+
+static void charging_run(void *h)
+{
+	if (atomic_test_and_clear_bit(&app.flags, FLAG_USB_OFF))
+	{
+		smf_set_state(SMF_CTX(&app), &home_state);
+	}
+	
+}
+
 /**
  * @brief Manage state transitions and associated actions.
  *
@@ -816,100 +892,9 @@ static void home_exit(void *h)
  *
  * @param new_state The target state to enter.
  */
-static void enter_state(device_state_t new_state)
+static void enter_state(device_state_t target)
 {
-	// Check our current state
-	device_state_t old_state = atomic_set(&current_state, new_state);
-
-	// If new = old, do nothing
-	if (old_state == new_state)
-	{
-		LOG_INF("Already in state: %d", new_state);
-		return;
-	}
-
-	LOG_INF("STATE TRANSITION: %d -> %d", old_state, new_state);
-
-	// Actions on EXITING the old state
-	switch (old_state)
-	{
-	case STATE_HOME_ADVERTISING:
-		LOG_DBG("Exiting HOME: Stopping sensor ADV timer and radio.");
-		stop_all_advertising();
-		k_timer_stop(&sync_check_timer);
-		k_timer_stop(&scan_close_timer);
-		if (scan_active)
-		{
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		break;
-	case STATE_AWAY_LOGGING:
-		LOG_DBG("Exiting AWAY: Stopping AWAY ADV timer, work, and radio.");
-
-		k_timer_stop(&sync_check_timer);
-		(void)k_work_cancel_delayable(&sync_adv_stop_work);
-		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
-		stop_all_advertising();
-		k_timer_stop(&scan_close_timer);
-		if (scan_active)
-		{
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		break;
-	case STATE_CHARGING:
-		LOG_DBG("Exiting CHARGING.");
-		break;
-	default:
-		break;
-	}
-
-	// Actions on ENTERING the new state
-	switch (new_state)
-	{
-	case STATE_HOME_ADVERTISING:
-		LOG_INF("Entering Home Adv Mode");
-		set_imu_rate(true); // Set high IMU rate and performance mode
-		missed_sync_responses = 0;
-		sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
-		start_sensor_advertising_ext();																	  // Start BLE advertisement
-		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); // Start timer to track in-home
-		break;
-	case STATE_AWAY_LOGGING:
-		LOG_INF("Entering Away Log Mode");
-		set_imu_rate(false);	// Set low IMU rate and low-power mode
-		stop_all_advertising(); // Stop advertising
-		uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
-		k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(sync_check_interval_ms));
-		break;
-	case STATE_CHARGING:
-		// Ensure other activities are stopped
-		LOG_INF("Entering Charging Mode");
-		stop_all_advertising();
-		k_timer_stop(&sync_check_timer);
-		(void)k_work_cancel_delayable(&sync_adv_stop_work);
-		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
-		if (scan_active)
-		{
-			LOG_DBG("Stopped active scan on entering CHARGING state");
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		k_timer_stop(&scan_close_timer);
-		break;
-	case STATE_INIT:
-		LOG_INF("Entering INIT state.");
-		stop_all_advertising();
-		if (scan_active)
-		{
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		k_timer_stop(&scan_close_timer);
-		k_timer_stop(&sync_check_timer);
-		break;
-	}
+	smf_set_state(SMF_CTX(&app), state_table[target]);
 }
 
 /**
@@ -1268,11 +1253,7 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 static void sync_check_timer_expiry(struct k_timer *timer_id)
 {
 	ARG_UNUSED(timer_id);
-	device_state_t state = atomic_get(&current_state);
-	if (state == STATE_AWAY_LOGGING || state == STATE_HOME_ADVERTISING)
-	{
-		k_work_submit(&sync_check_work);
-	}
+	atomic_set_bit(&app.flags, FLAG_SYNC_MISSED); 
 }
 
 /**
@@ -1286,7 +1267,7 @@ static void sync_check_timer_expiry(struct k_timer *timer_id)
 static void scan_close_timer_expiry(struct k_timer *t)
 {
 	ARG_UNUSED(t);
-	k_work_submit(&scan_close_work);
+	atomic_set_bit(&app.flags, FLAG_SCAN_TIMEOUT);
 }
 
 /**
@@ -2395,13 +2376,12 @@ int main(void)
 
 	// --- Initial State ---
 	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
-	LOG_DBG("Setting *initial state* determined state to: %d", initial_state);
-	enter_state(initial_state);
-
-	LOG_INF("Entering main loop (idle)");
+	
+	smf_set_initial(SMF_CTX(&app), state_table[initial_state]);
 
 	while (1)
 	{
+		smf_run_state(SMF_CTX(&app)); 
 		// Main thread can sleep or handle very low priority tasks
 		k_sleep(K_MINUTES(5));
 	}
