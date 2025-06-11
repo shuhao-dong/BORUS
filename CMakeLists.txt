@@ -8,6 +8,9 @@ FILE(GLOB app_sources src/*.c)
 target_sources(app PRIVATE ${app_sources})
 
 target_sources(app PRIVATE src/main.c)
-target_sources(app PRIVATE src/driver/bmp390.c)
-target_sources(app PRIVATE src/driver/bmi270.c)
-target_sources(app PRIVATE src/driver/battery.c)
+target_sources(app PRIVATE 
+    src/driver/bmp390.c
+    src/driver/bmi270.c
+    src/driver/battery.c
+    src/feature/dsp_filters.c
+)

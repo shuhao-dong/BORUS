@@ -57,6 +57,7 @@
 #include <zephyr/random/random.h>
 #include <zephyr/bluetooth/hci_vs.h>
 #include <zephyr/smf.h>
+#include "feature/dsp_filters.h"
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
@@ -1202,6 +1203,16 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				msg.payload.imu.imu_data[3] = (int16_t)(sensor_value_to_double(&raw_value.gyro.x) * 100);
 				msg.payload.imu.imu_data[4] = (int16_t)(sensor_value_to_double(&raw_value.gyro.y) * 100);
 				msg.payload.imu.imu_data[5] = (int16_t)(sensor_value_to_double(&raw_value.gyro.z) * 100);
+				
+				float32_t ax = msg.payload.imu.imu_data[0] / 100.0f;
+				float32_t ay = msg.payload.imu.imu_data[1] / 100.0f;
+				float32_t az = msg.payload.imu.imu_data[2] / 100.0f;
+
+				float32_t bp_out;
+				dsp_filters_process(ax, ay, az, NULL, &bp_out);
+
+				LOG_DBG("Filtered result: %.2f", (double)bp_out); 
+				
 				msg.payload.imu.timestamp = k_uptime_get_32();
 
 				if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
@@ -2103,7 +2114,6 @@ int main(void)
 
 	// --- Initial State ---
 	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
-	
 	atomic_set(&app.flags, 0); // Clear all flags
     atomic_set(&app.current_adv_type, 2); // '2' for idle/none
     app.missed_sync_responses = 0;
@@ -2113,6 +2123,8 @@ int main(void)
     smf_set_initial(SMF_CTX(&app), &states[STATE_INIT]);
 	LOG_DBG("Transitioning to determined initial state: %d", initial_state);
 	smf_set_state(SMF_CTX(&app), &states[initial_state]);
+
+	dsp_filters_init(); 
 
 	LOG_INF("Entering main loop (idle)");
 
