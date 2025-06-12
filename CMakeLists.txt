@@ -13,4 +13,5 @@ target_sources(app PRIVATE
     src/driver/bmi270.c
     src/driver/battery.c
     src/feature/dsp_filters.c
+    src/feature/gait_analysis.c
 )

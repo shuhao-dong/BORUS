@@ -58,6 +58,7 @@
 #include <zephyr/bluetooth/hci_vs.h>
 #include <zephyr/smf.h>
 #include "feature/dsp_filters.h"
+#include "feature/gait_analysis.h"
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
@@ -81,7 +82,7 @@ static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 	1024
+#define BMI270_HANDLER_STACKSIZE 	4096
 #define BMP390_HANDLER_STACKSIZE 	1024
 #define BLE_LOGGER_THREAD_STACKSIZE 2048
 
@@ -1203,7 +1204,9 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				msg.payload.imu.imu_data[3] = (int16_t)(sensor_value_to_double(&raw_value.gyro.x) * 100);
 				msg.payload.imu.imu_data[4] = (int16_t)(sensor_value_to_double(&raw_value.gyro.y) * 100);
 				msg.payload.imu.imu_data[5] = (int16_t)(sensor_value_to_double(&raw_value.gyro.z) * 100);
+				msg.payload.imu.timestamp = k_uptime_get_32();
 				
+				// DSP process try 
 				float32_t ax = msg.payload.imu.imu_data[0] / 100.0f;
 				float32_t ay = msg.payload.imu.imu_data[1] / 100.0f;
 				float32_t az = msg.payload.imu.imu_data[2] / 100.0f;
@@ -1211,9 +1214,18 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				float32_t bp_out;
 				dsp_filters_process(ax, ay, az, NULL, &bp_out);
 
-				LOG_DBG("Filtered result: %.2f", (double)bp_out); 
-				
-				msg.payload.imu.timestamp = k_uptime_get_32();
+				// LOG_ERR("Filtered result: %.2f", (double)bp_out); 
+
+				// Gait analysis try
+				struct gait_metrics gm;
+				if (gait_feed_sample(bp_out, &gm))
+				{
+					LOG_INF("stepReg %.2f  strideReg %.2f  cadence %.2f Hz  total %u",
+							(double)gm.step_regularity,
+							(double)gm.stride_regularity,
+							(double)gm.stride_freq_hz,
+							gm.total_steps);
+				}
 
 				if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 				{
@@ -2125,6 +2137,7 @@ int main(void)
 	smf_set_state(SMF_CTX(&app), &states[initial_state]);
 
 	dsp_filters_init(); 
+	gait_init(); 
 
 	LOG_INF("Entering main loop (idle)");
 
