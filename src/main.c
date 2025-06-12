@@ -82,7 +82,7 @@ static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 	4096
+#define BMI270_HANDLER_STACKSIZE 	8192
 #define BMP390_HANDLER_STACKSIZE 	1024
 #define BLE_LOGGER_THREAD_STACKSIZE 2048
 
@@ -1220,11 +1220,12 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				struct gait_metrics gm;
 				if (gait_feed_sample(bp_out, &gm))
 				{
-					LOG_INF("stepReg %.2f  strideReg %.2f  cadence %.2f Hz  total %u",
+					LOG_INF("stepReg %.2f  strideReg %.2f  cadence %.2f  total %u	stv %.2f",
 							(double)gm.step_regularity,
 							(double)gm.stride_regularity,
-							(double)gm.stride_freq_hz,
-							gm.total_steps);
+							(double)gm.cadence_spm, 
+							gm.total_steps,
+							(double)gm.step_time_var_pct);
 				}
 
 				if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
