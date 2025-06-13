@@ -7,6 +7,7 @@
 
 /* One walking-bout’s quality measures */
 struct gait_metrics {
+    bool is_walking;            /* flag to indicate if walking now   */
     float cadence_spm;          /* steps / minute                    */
     float dom_freq_hz;          /* dominant PSD frequency            */
     float range_g;              /* max-min SVM magnitude (g)         */
@@ -16,7 +17,11 @@ struct gait_metrics {
     float step_regularity;      /* AC peak 1                         */
     float stride_regularity;    /* AC peak 2                         */
     float step_time_var_pct;    /* coefficient of variation (%)      */
-    uint32_t total_steps; 
+    uint32_t total_steps;       /* total steps since power up        */
+    float skewness;             /* skewness of the 6-second window   */
+    float kurtosis;             /* kurtosis of the 6-second window   */
+    float std_diff1;            /* SD of the first derivative        */
+    float std_diff2;            /* SD of the second derivative       */
 };
 
 void gait_init(void);

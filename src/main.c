@@ -1220,14 +1220,18 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				struct gait_metrics gm;
 				if (gait_feed_sample(bp_out, &gm))
 				{
-					LOG_INF("stepReg %.2f  strideReg %.2f  cadence %.2f  total %u	stv %.2f",
+					LOG_INF("Walking: %d  stepReg %.2f cadence %.2f  total %u  stv %.2f  skew %.2f  kur %.2f  stddiff1 %.2f  stddiff2 %.2f",
+							gm.is_walking, 
 							(double)gm.step_regularity,
-							(double)gm.stride_regularity,
 							(double)gm.cadence_spm, 
 							gm.total_steps,
-							(double)gm.step_time_var_pct);
+							(double)gm.step_time_var_pct,
+							(double)gm.skewness,
+							(double)gm.kurtosis,
+							(double)gm.std_diff1,
+							(double)gm.std_diff2);
 				}
-
+				
 				if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 				{
 					LOG_WRN("BMI270 queue full");

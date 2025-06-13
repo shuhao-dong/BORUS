@@ -5,7 +5,7 @@
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_DBG); 
+LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_ERR); 
 
 /* ---------------- parameters ----------------------------------------- */
 #define FS_HZ   100
@@ -15,9 +15,9 @@ LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_DBG);
 #define HOP_SAMPLES (FS_HZ * HOP_SECONDS) // 100
 
 #define MOV_STD_THRESH  0.1f
-#define REG_THRESH  0.4f
+#define REG_THRESH  0.3f
 
-/* RING BUFFER: stores raw band-pass floats as bytes                  */
+/* RING BUFFER: stores raw band-pass floats as bytes */
 #define BYTES_PER_SAMPLE    sizeof(float) // 4
 #define RB_CAPACITY_BYTES   (WIN_SAMPLES * BYTES_PER_SAMPLE + BYTES_PER_SAMPLE)
 
@@ -30,6 +30,7 @@ static float fft_in[NFFT];
 static float fft_out[NFFT];
 static arm_rfft_fast_instance_f32 fft_inst; 
 
+/* Hold total steps integer and total steps float */
 static uint32_t g_total_steps = 0;
 static float g_total_steps_f = 0.0f; 
 
@@ -39,7 +40,43 @@ static uint32_t bout_n      = 0;
 static float    bout_mean   = 0.0f;
 static float    bout_M2     = 0.0f;
 
+/* hold derivative values */
+static float d1_buf[WIN_SAMPLES - 1];
+static float d2_buf[WIN_SAMPLES - 2]; 
+
 /* ------------------ helpers --------------------------- */
+
+static void stats_skew_kurt(const float *x, uint32_t N,
+                            float *skew, float *kurt)
+{
+    float sum  = 0.0f, sum2 = 0.0f, sum3 = 0.0f, sum4 = 0.0f;
+    for (uint32_t i = 0; i < N; i++) {
+        sum  += x[i];
+        sum2 += x[i] * x[i];
+    }
+    float mean = sum / N;
+    float var  = (sum2 / N) - mean * mean;
+    float sd   = sqrtf(var);
+
+    for (uint32_t i = 0; i < N; i++) {
+        float d = (x[i] - mean) / sd;
+        float d2 = d * d;
+        sum3 += d * d2;        /* (x-μ)^3 / σ^3 */
+        sum4 += d2 * d2;       /* (x-μ)^4 / σ^4 */
+    }
+    *skew = sum3 / N;
+    *kurt = sum4 / N - 3.0f;   /* excess kurtosis (Pearson) */
+}
+
+
+static void diff_f32(const float *in, float *out, uint32_t N)
+{
+    for (uint32_t i = 0; i < N - 1; i++)
+    {
+        out[i] = in[i + 1] - in[i];
+    }
+}
+
 static float autocorr_lag(const float *x, uint32_t N, uint32_t k)
 {
     float num = 0, den = 0;
@@ -81,6 +118,8 @@ void gait_init(void)
 
 bool gait_feed_sample(float bp_sample_g, struct gait_metrics *m)
 {
+    bool is_walking = true; 
+
     /* 1. Push sample (as bytes) */
     ring_buf_put(&gait_rb, (uint8_t *)&bp_sample_g, BYTES_PER_SAMPLE); 
 
@@ -116,7 +155,8 @@ bool gait_feed_sample(float bp_sample_g, struct gait_metrics *m)
     LOG_WRN("Standard deviation is: %.2f", (double)std); 
     if (std < MOV_STD_THRESH)
     {   
-        LOG_WRN("No significant movement detected"); 
+        LOG_WRN("No significant movement detected");
+        is_walking = false;  
         goto slide; 
     }
 
@@ -136,43 +176,47 @@ bool gait_feed_sample(float bp_sample_g, struct gait_metrics *m)
     uint32_t peak_idx;
     arm_max_f32(fft_out + 1, half - 1, &peak_val, &peak_idx); 
 
-    float dom_freq = (peak_idx * FS_HZ) / (float)NFFT;
+    float step_freq = (peak_idx * FS_HZ) / (float)NFFT;
 
-    LOG_WRN("Found stride frequency: %.2f", (double)dom_freq); 
-    if (dom_freq < 0.5f || dom_freq > 3.0f)
+    LOG_WRN("Found step frequency: %.2f", (double)step_freq); 
+    if (step_freq < 0.5f || step_freq > 3.0f)
     {   
         LOG_WRN("Frequency not in range");
+        is_walking = false; 
         goto slide;
     }
 
     /* 6. Regularity gate - step auto-correlation peak > 0.15 */
-    float step_reg = autocorr_lag(win_buf, WIN_SAMPLES, (uint32_t)(FS_HZ / (dom_freq * 2)));
-    LOG_WRN("Found step regularity: %.2f", (double)fabsf(step_reg)); 
-
-    if (fabsf(step_reg) < REG_THRESH)
+    float step_reg = autocorr_lag(win_buf, WIN_SAMPLES, (uint32_t)(FS_HZ / step_freq));
+    float stride_reg = autocorr_lag(win_buf, WIN_SAMPLES, (uint32_t)(FS_HZ / (step_freq * 2)));
+    
+    LOG_WRN("Found step regularity: %.2f", (double)fabsf(stride_reg)); 
+    if (fabsf(stride_reg) < REG_THRESH)
     {   
         LOG_WRN("Step regularity not in range"); 
+        is_walking = false; 
         goto slide; 
     }
 
-    float stride_reg = autocorr_lag(win_buf, WIN_SAMPLES, (uint32_t)(FS_HZ / dom_freq));
+    /* Per 6-second window features */
+    float skew, kurt;
+    stats_skew_kurt(win_buf, WIN_SAMPLES, &skew, &kurt);
+
+    diff_f32(win_buf, d1_buf, WIN_SAMPLES);
+    diff_f32(d1_buf, d2_buf, WIN_SAMPLES - 1);
+
+    float var_d1, var_d2;
+    arm_var_f32(d1_buf, WIN_SAMPLES - 1, &var_d1);
+    arm_var_f32(d2_buf, WIN_SAMPLES - 2, &var_d2);
+    float std_d1 = sqrtf(var_d1);
+    float std_d2 = sqrtf(var_d2); 
 
     /* ---------- bout metrics -------------------------------------- */
 
     /* cadence & step count from dominant frequency */
-    static float f_lp = 0;
-    float step_freq = dom_freq * 2.0f; 
 
-    if (f_lp == 0.0f)
-    {
-        f_lp = step_freq;
-    } else
-    {
-        f_lp = 0.8f * f_lp + 0.2f * step_freq;
-    }
-    
-    float cadence_spm = f_lp * 60.0f; 
-    float step_time = 1.0f / f_lp;
+    float cadence_spm = step_freq * 60.0f; 
+    float step_time = 1.0f / step_freq;
 
     if (!bout_active)
     {
@@ -207,21 +251,26 @@ bool gait_feed_sample(float bp_sample_g, struct gait_metrics *m)
     float rms_g;
     arm_rms_f32(win_buf, WIN_SAMPLES, &rms_g);
 
-    g_total_steps_f += f_lp * HOP_SECONDS;
+    g_total_steps_f += step_freq * HOP_SECONDS;
     g_total_steps = (uint32_t)roundf(g_total_steps_f); 
     
     if (m)
-    {
+    {   
+        m->is_walking = is_walking; 
         m->cadence_spm = cadence_spm;
-        m->dom_freq_hz = dom_freq;
+        m->dom_freq_hz = step_freq;
         m->range_g = range_g;
         m->rms_g = rms_g;
         m->dom_amp = peak_val; 
         m->dom_width_hz = dom_width;
-        m->step_regularity = step_reg;
+        m->step_regularity = fabsf(step_reg);
         m->stride_regularity = stride_reg;
         m->step_time_var_pct = step_cv;
         m->total_steps = g_total_steps;
+        m->kurtosis = kurt;
+        m->skewness = skew;
+        m->std_diff1 = std_d1;
+        m->std_diff2 = std_d2; 
     }
     
 slide:
@@ -229,5 +278,10 @@ slide:
     uint8_t dummy[HOP_SAMPLES * BYTES_PER_SAMPLE];
     ring_buf_get(&gait_rb, dummy, sizeof(dummy));
 
-    return m;
+    if (m)
+    {
+        m->is_walking = is_walking; 
+    }
+
+    return is_walking;
 }
