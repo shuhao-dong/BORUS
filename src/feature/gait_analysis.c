@@ -15,7 +15,7 @@ LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_ERR);
 #define HOP_SAMPLES (FS_HZ * HOP_SECONDS) // 100
 
 #define MOV_STD_THRESH  0.1f
-#define REG_THRESH  0.3f
+#define REG_THRESH  0.2f
 
 /* RING BUFFER: stores raw band-pass floats as bytes */
 #define BYTES_PER_SAMPLE    sizeof(float) // 4
@@ -68,7 +68,6 @@ static void stats_skew_kurt(const float *x, uint32_t N,
     *kurt = sum4 / N - 3.0f;   /* excess kurtosis (Pearson) */
 }
 
-
 static void diff_f32(const float *in, float *out, uint32_t N)
 {
     for (uint32_t i = 0; i < N - 1; i++)
@@ -116,7 +115,7 @@ void gait_init(void)
     bout_M2         = 0.0f;
 }
 
-bool gait_feed_sample(float bp_sample_g, struct gait_metrics *m)
+bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
 {
     bool is_walking = true; 
 

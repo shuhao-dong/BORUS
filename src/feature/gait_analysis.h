@@ -25,6 +25,6 @@ struct gait_metrics {
 };
 
 void gait_init(void);
-bool gait_feed_sample(float bp_sample_g, struct gait_metrics *m); 
+bool gait_analyse(float bp_sample_g, struct gait_metrics *m); 
 
 #endif
