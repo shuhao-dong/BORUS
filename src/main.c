@@ -1220,14 +1220,7 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				struct gait_metrics gm;
 				if (gait_analyse(bp_out, &gm))
 				{
-					LOG_INF("StepReg:%.2f Cadence:%.2f DomWidth:%.2f  Total:%u  Total_w:%u  Stv %.2f",
-						(double)gm.step_regularity,
-						(double)gm.cadence_spm, 
-						(double)gm.dom_width_hz, 
-						gm.total_steps,
-						gm.total_steps_weighted, 
-						(double)gm.step_time_var_pct
-					);
+					
 				}
 				
 				if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)

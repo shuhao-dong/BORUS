@@ -5,7 +5,7 @@
 #include <zephyr/sys/ring_buffer.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_ERR);
+LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_INF);
 
 /* Window parameter */
 #define FS_HZ 100
@@ -16,7 +16,7 @@ LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_ERR);
 
 /* Movement threshold */
 #define MOV_STD_THRESH 0.1f
-#define REG_THRESH 0.2f
+#define REG_THRESH 0.15f
 
 /* RING BUFFER: stores raw band-pass floats as bytes */
 #define BYTES_PER_SAMPLE sizeof(float) // 4
@@ -224,8 +224,6 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     arm_var_f32(win_buf, WIN_SAMPLES, &var);
     float std = sqrtf(var);
 
-    LOG_WRN("Standard deviation is: %.2f", (double)std);
-
     if (std < MOV_STD_THRESH)
     {
         LOG_WRN("No significant movement detected");
@@ -251,8 +249,6 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     arm_max_f32(fft_out + 1, half - 1, &peak_val, &peak_idx);
     float step_freq = (peak_idx * FS_HZ) / (float)NFFT;
 
-    LOG_WRN("Found step frequency: %.2f", (double)step_freq);
-
     if (step_freq < 0.5f || step_freq > 3.0f)
     {
         LOG_WRN("Frequency not in range");
@@ -263,8 +259,6 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     /* 6. Regularity gate - stride regularity > @ref REG_THRESH */
     float step_reg = autocorr_lag(win_buf, WIN_SAMPLES, (uint32_t)(FS_HZ / step_freq));
     float stride_reg = autocorr_lag(win_buf, WIN_SAMPLES, (uint32_t)(FS_HZ / (step_freq / 2)));
-
-    LOG_WRN("Found step regularity: %.2f", (double)fabsf(stride_reg));
 
     if (fabsf(stride_reg) < REG_THRESH)
     {
@@ -309,7 +303,7 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
         step time variability*/
     float dom_width = width_halfamp(fft_out, peak_idx, half);
     float step_time = 1.0f / step_freq;
-
+    
     if (!bout_active)
     {
         bout_active = true;
@@ -343,9 +337,9 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     float counted_steps_in_hop = total_events_in_hop / 2.0f;
 
     const float REG_LOW_CONF = REG_THRESH;
-    const float REG_HIGH_CONF = 0.5f; 
+    const float REG_HIGH_CONF = 0.9f; 
     const float WIDTH_LOW_CONF = 0.15f;
-    const float WIDTH_HIGH_CONF = 0.8f;
+    const float WIDTH_HIGH_CONF = 0.9f;
 
     // Weight from Stride Regularity (scales 0-1)
     float w_reg = (stride_reg - REG_LOW_CONF) / (REG_HIGH_CONF - REG_LOW_CONF);
@@ -355,7 +349,6 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     float w_width = (WIDTH_HIGH_CONF - dom_width) / (WIDTH_HIGH_CONF - WIDTH_LOW_CONF);
     w_width = fmaxf(0.0f, fminf(1.0f, w_width)); // Clamp between 0.0 and 1.0
 
-    // Combine weights: confidence is high only if BOTH metrics indicate it.
     float inv_reg = 1.0f - w_reg;
     float inv_width = 1.0f - w_width;
     float w = 1.0f - sqrtf(inv_reg * inv_width);
@@ -364,15 +357,16 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     // When w=0 (low confidence), we trust the precise time-domain count.
     float fused_steps = (w * fft_steps_in_hop) + ((1.0f - w) * counted_steps_in_hop);
 
-    LOG_WRN("Fusion: FFT=%.1f, Count=%.1f -> w_reg=%.2f, w_width=%.2f -> w=%.2f -> Fused=%.2f",
-            (double)fft_steps_in_hop, (double)counted_steps_in_hop,
-            (double)w_reg, (double)w_width, (double)w, (double)fused_steps);
-
     g_total_steps_f_weighted += fused_steps;
-    g_total_steps_weighted = (uint32_t)roundf(g_total_steps_f_weighted); 
+    g_total_steps_weighted = (uint32_t)ceilf(g_total_steps_f_weighted); 
 
     g_total_steps_f += step_freq * HOP_SECONDS;
     g_total_steps = (uint32_t)roundf(g_total_steps_f);
+
+    LOG_WRN("Regularity: %.2f, Width: %.2f, S= %d, Fusion: FFT=%.1f, Count=%.1f -> w_reg=%.2f, w_width=%.2f -> w=%.2f -> Fused=%d",
+            (double)step_reg, (double)dom_width, g_total_steps,
+            (double)fft_steps_in_hop, (double)counted_steps_in_hop,
+            (double)w_reg, (double)w_width, (double)w, g_total_steps_weighted);
 
     if (m)
     {
@@ -405,5 +399,5 @@ slide:
     }
 
     // Only return when walking
-    return is_walking;
+    return m;
 }
