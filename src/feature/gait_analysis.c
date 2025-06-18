@@ -50,6 +50,16 @@ static float d2_buf[WIN_SAMPLES - 2];
 
 /* ------------------ Helpers --------------------------- */
 
+static inline float adaptive_k(float reg)
+{
+    if (reg < 0.0f) reg = 0.0f;
+    if (reg > 1.0f) reg = 1.0f;
+
+    float k = 0.25f - 0.27f * reg;
+    if (k < 0.10f) k = 0.10f;          /* clamp floor */
+    return k;
+}
+
 /**
  * @brief Count the number of events (peaks or valleys) in a window of data.
  *
@@ -226,8 +236,8 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
 
     if (std < MOV_STD_THRESH)
     {
-        LOG_WRN("No significant movement detected");
         is_walking = false;
+        LOG_WRN("No significant movement detected");
         goto slide;
     }
 
@@ -251,8 +261,8 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
 
     if (step_freq < 0.5f || step_freq > 3.0f)
     {
-        LOG_WRN("Frequency not in range");
         is_walking = false;
+        LOG_WRN("Frequency not in range");
         goto slide;
     }
 
@@ -262,8 +272,8 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
 
     if (fabsf(stride_reg) < REG_THRESH)
     {
-        LOG_WRN("Step regularity not in range");
         is_walking = false;
+        LOG_WRN("Step regularity not in range");
         goto slide;
     }
 
@@ -331,11 +341,13 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     // Estimation 2: From direct peak and valley finding
     const uint32_t start_offset = WIN_SAMPLES - HOP_SAMPLES;
     const uint32_t min_dist = (uint32_t)(FS_HZ / 6.0f);
-    const float peak_height = 0.15f * std; 
+    float k_peak = adaptive_k(stride_reg); 
+    const float peak_height = k_peak * std; 
 
     uint32_t total_events_in_hop = count_events_in_window(win_buf + start_offset, HOP_SAMPLES, peak_height, min_dist);
     float counted_steps_in_hop = total_events_in_hop / 2.0f;
 
+    // Step count fusion from both estimations 
     const float REG_LOW_CONF = REG_THRESH;
     const float REG_HIGH_CONF = 0.9f; 
     const float WIDTH_LOW_CONF = 0.15f;
@@ -360,9 +372,12 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     g_total_steps_f_weighted += fused_steps;
     g_total_steps_weighted = (uint32_t)ceilf(g_total_steps_f_weighted); 
 
-    g_total_steps_f += step_freq * HOP_SECONDS;
-    g_total_steps = (uint32_t)roundf(g_total_steps_f);
-
+    if (is_walking)
+    {
+        g_total_steps_f += step_freq * HOP_SECONDS;
+        g_total_steps = (uint32_t)roundf(g_total_steps_f);
+    }
+    
     LOG_WRN("Regularity: %.2f, Width: %.2f, S= %d, Fusion: FFT=%.1f, Count=%.1f -> w_reg=%.2f, w_width=%.2f -> w=%.2f -> Fused=%d",
             (double)step_reg, (double)dom_width, g_total_steps,
             (double)fft_steps_in_hop, (double)counted_steps_in_hop,
