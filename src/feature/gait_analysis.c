@@ -18,6 +18,9 @@ LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_INF);
 #define MOV_STD_THRESH 0.1f
 #define REG_THRESH 0.15f
 
+/* Debounce: allow short gaps before ending a walking bout (seconds) */
+#define BOUT_END_DEBOUNCE 2
+
 /* RING BUFFER: stores raw band-pass floats as bytes */
 #define BYTES_PER_SAMPLE sizeof(float) // 4
 #define RB_CAPACITY_BYTES (WIN_SAMPLES * BYTES_PER_SAMPLE + BYTES_PER_SAMPLE)
@@ -43,6 +46,9 @@ static bool bout_active = false;
 static uint32_t bout_n = 0;
 static float bout_mean = 0.0f;
 static float bout_M2 = 0.0f;
+
+/* Count of consecutive non-walking windows */
+static uint32_t gap_count = 0;
 
 /* Hold derivative values */
 static float d1_buf[WIN_SAMPLES - 1];
@@ -184,6 +190,7 @@ void gait_init(void)
     bout_n = 0;
     bout_mean = 0.0f;
     bout_M2 = 0.0f;
+    gap_count = 0;
 }
 
 bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
@@ -392,9 +399,24 @@ slide:
     /* 8. Drop the oldest 100 samples (1-second hop) */
     ring_buf_get(&gait_rb, NULL, HOP_SAMPLES * BYTES_PER_SAMPLE);
 
-    // Update is_walking flag here
-    if (m)
-    {
+    /* Debounce short gaps between walking bouts */
+    if (!is_walking) {
+        if (gap_count < BOUT_END_DEBOUNCE) {
+            is_walking = true;
+            gap_count++;
+        } else {
+            if (bout_active) {
+                bout_active = false;
+                bout_n = 0;
+                bout_mean = 0.0f;
+                bout_M2 = 0.0f;
+            }
+        }
+    } else {
+        gap_count = 0;
+    }
+
+    if (m) {
         m->is_walking = is_walking;
     }
 
