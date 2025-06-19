@@ -103,9 +103,9 @@ SETTINGS_STATIC_HANDLER_DEFINE(borus_wdt, BORUS_SETTINGS_PATH, NULL, settings_ha
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 	8192
+#define BMI270_HANDLER_STACKSIZE 	1024
 #define BMP390_HANDLER_STACKSIZE 	1024
-#define BLE_LOGGER_THREAD_STACKSIZE 2048
+#define BLE_LOGGER_THREAD_STACKSIZE 1536
 
 // Priorities (Lower number = higher priority)
 #define BMI270_HANDLER_PRIORITY 5 	// Highest sensor priority due to higher sample rate
@@ -271,6 +271,8 @@ const struct device *const qspi_dev = DEVICE_DT_GET(DT_INST(0, nordic_qspi_nor))
 #define LFS_MOUNT_POINT "/lfs1"			  				// Mount point for the file system
 
 USBD_DEFINE_MSC_LUN(NOR, "NOR", "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
+
+static atomic_t flash_can_suspend = ATOMIC_INIT(0);   /* 0 = busy, 1 = OK   */
 
 /* -------------------- BLE Configurations -------------------- */
 
@@ -478,11 +480,15 @@ static void state_home_entry(void *o)
     ctx->missed_sync_responses = 0;
     ctx->sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
     start_sensor_advertising_ext(ctx);
-	int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_SUSPEND); 
-	if (ret)
+	if (atomic_cas(&flash_can_suspend, 1, 0))
 	{
-		LOG_WRN("Failed to suspend external flash: %d", ret); 
+		int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_SUSPEND);
+		if (ret)
+		{
+			LOG_WRN("Failed to suspend external flash: %d", ret);
+		}
 	}
+	
     k_timer_start(&sync_check_timer, K_MSEC(ctx->sync_check_interval_ms), K_MSEC(ctx->sync_check_interval_ms));
 }
 
@@ -490,10 +496,15 @@ static void state_home_exit(void *o)
 {
     struct app_ctx *ctx = o;
     LOG_DBG("SMF: Exiting STATE_HOME_ADVERTISING");
-	int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_RESUME); 
-	if (ret)
+	enum pm_device_state st;
+	pm_device_state_get(qspi_dev, &st);
+	if (st == PM_DEVICE_STATE_SUSPENDED)
 	{
-		LOG_WRN("Failed to resume external flash: %d", ret); 
+		int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_RESUME);
+		if (ret)
+		{
+			LOG_WRN("Failed to resume external flash: %d", ret);
+		}
 	}
     stop_all_timers_and_scans(ctx);
 }
@@ -640,7 +651,6 @@ static void stop_all_advertising(struct app_ctx *ctx)
 		bt_le_ext_adv_stop(g_adv_sensor_ext_handle);
 	}
 	atomic_set(&ctx->current_adv_type, ADV_TYPE_NONE);
-	LOG_DBG("All advertising stopped"); 
 }
 
 /**
@@ -700,7 +710,6 @@ static void start_sync_request_advertising(struct app_ctx *ctx)
 
 	// Ensure other type is stopped first
 	if (atomic_test_bit(&ctx->flags, FLAG_ADV_RUNNING)) { 
-        LOG_DBG("start_sync_request_advertising: Stopping existing advertising first.");
         stop_all_advertising(ctx);
         k_msleep(20); 
     }
@@ -956,7 +965,7 @@ static void battery_timeout_work_handler(struct k_work *work)
 		{
 			LOG_WRN("Battery queue full");
 		}
-		LOG_DBG("Battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
+		LOG_DBG("Battery level: %d mV", batt_mV);
 	}
 	else
 	{
@@ -989,7 +998,6 @@ static void usb_connect_work_handler(struct k_work *work)
 static void usb_disconnect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_DBG("Workqueue: USB disconnected, entering HOME");
 	smf_set_state(SMF_CTX(&app), &states[STATE_HOME_ADVERTISING]); 
 }
 
@@ -1004,13 +1012,30 @@ static void usb_disconnect_work_handler(struct k_work *work)
 static void scan_found_ap_work_handler(struct k_work *k_work)
 {
 	ARG_UNUSED(k_work);
-	if (smf_current_state_get(SMF_CTX(&app)) == &states[STATE_CHARGING])
+	struct app_ctx *ctx = &app;
+
+	if (smf_current_state_get(SMF_CTX(ctx)) == &states[STATE_CHARGING])
 	{
-		LOG_DBG("Workqueue: Scan found AP, but in CHARGING state. Ignoring.");
 		return;
 	}
-	LOG_DBG("Workqueue: Scan found AP, ensuring HOME state.");
-    smf_set_state(SMF_CTX(&app), &states[STATE_HOME_ADVERTISING]);
+
+	/* 1.  Cancel the scan-close timer and stop the scan */
+	if (atomic_test_and_clear_bit(&ctx->flags, FLAG_SCAN_ACTIVE))
+	{
+		bt_le_scan_stop();
+	}
+	k_timer_stop(&scan_close_timer); /* <- new */
+	ctx->missed_sync_responses = 0;	 /* <- new */
+
+	if (smf_current_state_get(SMF_CTX(ctx)) != &states[STATE_HOME_ADVERTISING])
+	{
+		smf_set_state(SMF_CTX(ctx), &states[STATE_HOME_ADVERTISING]);
+	}
+	else
+	{
+		/* already home – just restart the sensor advertiser if needed */
+		start_sensor_advertising_ext(ctx);
+	}
 }
 
 /**
@@ -1070,7 +1095,6 @@ void bmi270_int1_interrupt_triggered(const struct device *dev, struct gpio_callb
  */
 void battery_timer_expiry(struct k_timer *timer_id)
 {
-	LOG_DBG("Heartbeat timer expired, submitting work");
 	k_work_submit(&battery_timeout_work);
 }
 
@@ -1102,15 +1126,12 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 	switch (status)
 	{
 	case USB_DC_CONNECTED:
-		LOG_DBG("USB Connected - Entering Charging State");
 		k_work_submit(&usb_connect_work);
 		break;
 	case USB_DC_DISCONNECTED:
-		LOG_DBG("USB Disconnected");
 		k_work_submit(&usb_disconnect_work);
 		break;
 	case USB_DC_CONFIGURED:
-		LOG_INF("USB Configured by Host, ready for reading");
 		if (smf_current_state_get(SMF_CTX(&app)) != &states[STATE_CHARGING])
 		{
 			k_work_submit(&usb_connect_work);
@@ -1623,6 +1644,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				file_is_open = false;
 				log_write_count = 0; // Reset sync counter
+				atomic_set(&flash_can_suspend, 1); 
 			}
 
 			bool send_adv = false;
@@ -1740,12 +1762,14 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 						}
 						fs_close(&log_file); // Close on error
 						file_is_open = false;
+						atomic_set(&flash_can_suspend, 1);
 					}
 					else if (written < sizeof(log_record))
 					{
 						LOG_WRN("Partial write to log file: %d / %u bytes", (int)written, sizeof(log_record));
 						fs_close(&log_file);
 						file_is_open = false;
+						atomic_set(&flash_can_suspend, 1);
 					}
 					else
 					{
@@ -1801,6 +1825,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				file_is_open = false;
 				log_write_count = 0;
+				atomic_set(&flash_can_suspend, 1);
 			}
 			if (imu_batch_count > 0)
 			{
@@ -2182,17 +2207,22 @@ int main(void)
 	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
 
 	// --- Create Threads ---
-	k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
+	k_tid_t tid;
+
+	tid = k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
 					K_THREAD_STACK_SIZEOF(bmi270_handler_stack_area), bmi270_handler_func, NULL, NULL, NULL,
 					BMI270_HANDLER_PRIORITY, 0, K_MSEC(1000));
+	k_thread_name_set(tid, "bmi270"); 
 
-	k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
+	tid = k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
 					K_THREAD_STACK_SIZEOF(bmp390_handler_stack_area), bmp390_handler_func, NULL, NULL, NULL,
 					BMP390_HANDLER_PRIORITY, 0, K_MSEC(1000));
+	k_thread_name_set(tid, "bmp390");
 
-	k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
+	tid = k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
 					K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
 					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
+	k_thread_name_set(tid, "ble_log"); 
 
 	LOG_INF("Entering main loop (idle)");
 

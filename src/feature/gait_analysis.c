@@ -15,7 +15,7 @@ LOG_MODULE_REGISTER(GAIT, LOG_LEVEL_INF);
 #define HOP_SAMPLES (FS_HZ * HOP_SECONDS) // 100
 
 /* Movement threshold */
-#define MOV_STD_THRESH 0.1f
+#define MOV_STD_THRESH 0.08f
 #define REG_THRESH 0.15f
 
 /* RING BUFFER: stores raw band-pass floats as bytes */
@@ -348,10 +348,10 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     float counted_steps_in_hop = total_events_in_hop / 2.0f;
 
     // Step count fusion from both estimations 
-    const float REG_LOW_CONF = REG_THRESH;
-    const float REG_HIGH_CONF = 0.9f; 
-    const float WIDTH_LOW_CONF = 0.15f;
-    const float WIDTH_HIGH_CONF = 0.9f;
+    const float REG_LOW_CONF = 0.60f;
+    const float REG_HIGH_CONF = 0.80f; 
+    const float WIDTH_LOW_CONF = 0.20f;
+    const float WIDTH_HIGH_CONF = 0.80f;
 
     // Weight from Stride Regularity (scales 0-1)
     float w_reg = (stride_reg - REG_LOW_CONF) / (REG_HIGH_CONF - REG_LOW_CONF);
