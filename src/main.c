@@ -60,6 +60,7 @@
 #include "feature/dsp_filters.h"
 #include "feature/gait_analysis.h"
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/pm/device.h>
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
@@ -263,6 +264,8 @@ static struct k_timer scan_close_timer; // For scan close
 
 /* -------------------- File system and MSC -------------------- */
 
+const struct device *const qspi_dev = DEVICE_DT_GET(DT_INST(0, nordic_qspi_nor)); 
+
 #define LOG_FILE_PATH "/lfs1/imu_log.bin" 				// File path for the log file
 #define LFS_MOUNT_POINT "/lfs1"			  				// Mount point for the file system
 
@@ -402,7 +405,7 @@ BMI270_Context bmi270_ctx;
 static const struct spi_dt_spec bmi270_spi = SPI_DT_SPEC_GET(DT_NODELABEL(bmi270), SPIOP, 0);
 
 // BMP390 (currently BME688 but can replace later)
-const struct device *const dev = DEVICE_DT_GET_ONE(bosch_bme680);
+const struct device *const bme688_dev = DEVICE_DT_GET_ONE(bosch_bme680);
 
 /* -------------------- LittleFS Mount Configuration -------------------- */
 
@@ -463,18 +466,19 @@ static void stop_all_timers_and_scans(struct app_ctx *ctx)
 static void state_init_entry(void *o)
 {
     struct app_ctx *ctx = o; // Cast the generic object pointer to our context type
-    LOG_INF("SMF: Entering STATE_INIT");
+    LOG_DBG("SMF: Entering STATE_INIT");
     stop_all_timers_and_scans(ctx);
 }
 
 static void state_home_entry(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_INF("SMF: Entering STATE_HOME_ADVERTISING");
+    LOG_DBG("SMF: Entering STATE_HOME_ADVERTISING");
     set_imu_rate(true);
     ctx->missed_sync_responses = 0;
     ctx->sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
     start_sensor_advertising_ext(ctx);
+	pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_SUSPEND); 
     k_timer_start(&sync_check_timer, K_MSEC(ctx->sync_check_interval_ms), K_MSEC(ctx->sync_check_interval_ms));
 }
 
@@ -482,15 +486,17 @@ static void state_home_exit(void *o)
 {
     struct app_ctx *ctx = o;
     LOG_DBG("SMF: Exiting STATE_HOME_ADVERTISING");
+	pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_RESUME); 
     stop_all_timers_and_scans(ctx);
 }
 
 static void state_away_entry(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_INF("SMF: Entering STATE_AWAY_LOGGING");
+    LOG_DBG("SMF: Entering STATE_AWAY_LOGGING");
     set_imu_rate(false);
     stop_all_advertising(ctx);
+	pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_SUSPEND); 
     uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
     k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(ctx->sync_check_interval_ms));
 }
@@ -499,13 +505,14 @@ static void state_away_exit(void *o)
 {
     struct app_ctx *ctx = o;
     LOG_DBG("SMF: Exiting STATE_AWAY_LOGGING");
+	pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_RESUME);
     stop_all_timers_and_scans(ctx);
 }
 
 static void state_charging_entry(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_INF("SMF: Entering STATE_CHARGING");
+    LOG_DBG("SMF: Entering STATE_CHARGING");
     stop_all_timers_and_scans(ctx);
 }
 
@@ -1277,7 +1284,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	while (1)
 	{
 		// --- 1Hz BME680 Reading ---
-		if (!dev || !device_is_ready(dev))
+		if (!bme688_dev || !device_is_ready(bme688_dev))
 		{
 			LOG_ERR("BME680 device not ready in handler thread");
 			k_sleep(K_SECONDS(5));
@@ -1285,7 +1292,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 		}
 
 		struct sensor_value temp, press;
-		int ret = sensor_sample_fetch(dev);
+		int ret = sensor_sample_fetch(bme688_dev);
 		if (ret < 0)
 		{
 			LOG_ERR("Failed to fetch from BME688: %d", ret);
@@ -1293,7 +1300,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 			continue;
 		}
 
-		if (sensor_channel_get(dev, SENSOR_CHAN_AMBIENT_TEMP, &temp) == 0 && sensor_channel_get(dev, SENSOR_CHAN_PRESS, &press) == 0)
+		if (sensor_channel_get(bme688_dev, SENSOR_CHAN_AMBIENT_TEMP, &temp) == 0 && sensor_channel_get(bme688_dev, SENSOR_CHAN_PRESS, &press) == 0)
 		{
 			sensor_message_t msg = {.type = SENSOR_MSG_TYPE_ENVIRONMENT};
 			msg.payload.env.temperature = (uint16_t)(sensor_value_to_double(&temp) * 100);
@@ -1919,7 +1926,7 @@ int main(void)
 	LOG_INF("Step 2.2: BMI270 sensor feature configured");
 
 	// BME688 (Environmental)
-	if (!device_is_ready(dev))
+	if (!device_is_ready(bme688_dev))
 	{
 		LOG_ERR("BME688: device not ready");
 		return -1;
