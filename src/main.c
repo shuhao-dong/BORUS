@@ -61,6 +61,7 @@
 #include "feature/gait_analysis.h"
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/pm/device.h>
+#include "ram_pwrdn.h"
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
@@ -477,7 +478,11 @@ static void state_home_entry(void *o)
     ctx->missed_sync_responses = 0;
     ctx->sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
     start_sensor_advertising_ext(ctx);
-	pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_SUSPEND); 
+	int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_SUSPEND); 
+	if (ret)
+	{
+		LOG_WRN("Failed to suspend external flash: %d", ret); 
+	}
     k_timer_start(&sync_check_timer, K_MSEC(ctx->sync_check_interval_ms), K_MSEC(ctx->sync_check_interval_ms));
 }
 
@@ -485,7 +490,11 @@ static void state_home_exit(void *o)
 {
     struct app_ctx *ctx = o;
     LOG_DBG("SMF: Exiting STATE_HOME_ADVERTISING");
-	pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_RESUME); 
+	int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_RESUME); 
+	if (ret)
+	{
+		LOG_WRN("Failed to resume external flash: %d", ret); 
+	}
     stop_all_timers_and_scans(ctx);
 }
 
@@ -495,7 +504,13 @@ static void state_away_entry(void *o)
     LOG_DBG("SMF: Entering STATE_AWAY_LOGGING");
     set_imu_rate(false);
     stop_all_advertising(ctx);
-	pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_SUSPEND); 
+	/* ----- This needs to be replaced by BMP390 -----*/
+	int ret = pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_SUSPEND); 
+	if (ret)
+	{
+		LOG_WRN("Failed to suspend BME688: %d", ret); 
+	}
+	/* -----------------------------------------------*/
     uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
     k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(ctx->sync_check_interval_ms));
 }
@@ -504,7 +519,13 @@ static void state_away_exit(void *o)
 {
     struct app_ctx *ctx = o;
     LOG_DBG("SMF: Exiting STATE_AWAY_LOGGING");
-	pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_RESUME);
+	/* ----- This needs to be replaced by BMP390 -----*/
+	int ret = pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_RESUME);
+	if (ret)
+	{
+		LOG_WRN("Failed to resume BME688: %d", ret); 
+	}
+	/* -----------------------------------------------*/
     stop_all_timers_and_scans(ctx);
 }
 
@@ -2174,6 +2195,8 @@ int main(void)
 					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
 
 	LOG_INF("Entering main loop (idle)");
+
+	power_down_unused_ram(); 
 
 	while (1)
 	{
