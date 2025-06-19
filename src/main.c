@@ -423,7 +423,6 @@ static struct fs_mount_t lfs_mount_p = {
 
 int temperature_measure(void)
 {
-
 	int err = 0;
 	struct net_buf *buf, *rsp = NULL;
 	struct bt_hci_rp_vs_read_chip_temp *cmd_params;
