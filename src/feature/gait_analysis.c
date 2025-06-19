@@ -237,7 +237,7 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     if (std < MOV_STD_THRESH)
     {
         is_walking = false;
-        LOG_WRN("No significant movement detected");
+        LOG_DBG("No significant movement detected");
         goto slide;
     }
 
@@ -262,7 +262,7 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     if (step_freq < 0.5f || step_freq > 3.0f)
     {
         is_walking = false;
-        LOG_WRN("Frequency not in range");
+        LOG_DBG("Frequency not in range");
         goto slide;
     }
 
@@ -273,7 +273,7 @@ bool gait_analyse(float bp_sample_g, struct gait_metrics *m)
     if (fabsf(stride_reg) < REG_THRESH)
     {
         is_walking = false;
-        LOG_WRN("Step regularity not in range");
+        LOG_DBG("Step regularity not in range");
         goto slide;
     }
 
@@ -414,5 +414,5 @@ slide:
     }
 
     // Only return when walking
-    return m;
+    return is_walking && m;
 }

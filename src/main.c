@@ -59,10 +59,19 @@
 #include <zephyr/smf.h>
 #include "feature/dsp_filters.h"
 #include "feature/gait_analysis.h"
+#include <zephyr/drivers/hwinfo.h>
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
-/* -------------------- Watchdog Timer --------------------*/
+/* -------------------- Setting subsystem for Encryption and Watchdog -------------------- */
+
+#define BORUS_SETTINGS_PATH	"borus/state" // Save nonce in NVM, allow reboot
+#define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
+
+static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
+static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
+
+#define WDT_REBOOT_NUMBER_THRESHOLD	3
 
 #define WDT_TIMEOUT_MS 			4000	// Watchdog timeout
 #define WDT_FEED_INTERVAL_MS 	1000	// Watchdog feed interval
@@ -71,13 +80,23 @@ static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); // Get 
 static int wdt_channel_id = -1;											 // Initialize the WDT channel ID
 static struct k_timer wdt_feed_timer;									 // Timer for feeding the watchdog
 
-/* -------------------- BLE Packet Encryption -------------------- */
+static uint8_t wdt_reboot_count;
+static int settings_handle_wdt_cnt(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	const char *next;
 
-#define BORUS_SETTINGS_PATH	"borus/state" // Save nonce in NVM, allow reboot
-#define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
+	if (settings_name_steq(name, "wdt_cnt", &next) && !next)
+	{
+		if (len == sizeof(wdt_reboot_count))
+		{
+			return read_cb(cb_arg, &wdt_reboot_count, sizeof(wdt_reboot_count));
+		}
+		return -EINVAL;
+	}
+	return -ENOENT;
+}
 
-static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
-static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
+SETTINGS_STATIC_HANDLER_DEFINE(borus_wdt, BORUS_SETTINGS_PATH, NULL, settings_handle_wdt_cnt, NULL, NULL); 
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -929,7 +948,6 @@ static void battery_timeout_work_handler(struct k_work *work)
 static void usb_connect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_DBG("Workqueue: USB connected, entering CHARGING");
 	smf_set_state(SMF_CTX(&app), &states[STATE_CHARGING]); 
 }
 
@@ -1211,16 +1229,15 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				float32_t ay = msg.payload.imu.imu_data[1] / 100.0f;
 				float32_t az = msg.payload.imu.imu_data[2] / 100.0f;
 
-				float32_t bp_out;
-				dsp_filters_process(ax, ay, az, NULL, &bp_out);
-
-				// LOG_ERR("Filtered result: %.2f", (double)bp_out); 
-
-				// Gait analysis try
-				struct gait_metrics gm;
-				if (gait_analyse(bp_out, &gm))
+				// Only perform gait analysis when we are in HOME or AWAY
+				if (current != &states[STATE_CHARGING])
 				{
-					
+					// Gait analysis
+					float32_t bp_out;
+					dsp_filters_process(ax, ay, az, NULL, &bp_out);
+
+					struct gait_metrics gm;
+					gait_analyse(bp_out, &gm);
 				}
 				
 				if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
@@ -2029,7 +2046,22 @@ int main(void)
 		LOG_ERR("Failed to load settings for 'borus/state': %d", ret);
 	}
 
-	LOG_INF("Step 8: Settings loaded, nonce = %llu", nonce_counter);
+	uint32_t rst_cause = 0;
+	hwinfo_get_reset_cause(&rst_cause);
+	hwinfo_clear_reset_cause();
+
+	if (rst_cause & RESET_WATCHDOG)
+	{
+		wdt_reboot_count ++;
+		settings_save_one(BORUS_SETTINGS_PATH "/wdt_cnt", &wdt_reboot_count, sizeof(wdt_reboot_count));
+	}
+
+	if (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD)
+	{
+		gpio_pin_set_dt(&leds[0], 1);
+	}
+	
+	LOG_INF("Step 8: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
 
 	// USB Device Subsystem
 	ret = usb_enable(usb_dc_status_cb); // Register callback
@@ -2093,32 +2125,7 @@ int main(void)
 		return -1;
 	}
 
-	LOG_INF("Step 11: Watchdog started (timeout %d ms)", WDT_TIMEOUT_MS); 
-
-	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
-	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
-	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
-
-	/* LED to indicate successful initialisation sequence */
-	for (int i = 0; i < 3; i++)
-	{
-		gpio_pin_set_dt(&leds[i], 1);
-		k_msleep(250);
-		gpio_pin_set_dt(&leds[i], 0);
-	}
-
-	// --- Create Threads ---
-	k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
-					K_THREAD_STACK_SIZEOF(bmi270_handler_stack_area), bmi270_handler_func, NULL, NULL, NULL,
-					BMI270_HANDLER_PRIORITY, 0, K_MSEC(1000));
-
-	k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
-					K_THREAD_STACK_SIZEOF(bmp390_handler_stack_area), bmp390_handler_func, NULL, NULL, NULL,
-					BMP390_HANDLER_PRIORITY, 0, K_MSEC(1000));
-
-	k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
-					K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
-					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
+	LOG_INF("Step 11: Watchdog set (timeout %d ms)", WDT_TIMEOUT_MS); 
 
 	// --- Initial State ---
 	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
@@ -2134,6 +2141,31 @@ int main(void)
 
 	dsp_filters_init(); 
 	gait_init(); 
+
+	/* LED to indicate successful initialisation sequence */
+	for (int i = 0; i < 3; i++)
+	{
+		gpio_pin_set_dt(&leds[i], 1);
+		k_msleep(250);
+		gpio_pin_set_dt(&leds[i], 0);
+	}
+
+	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
+	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
+	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
+
+	// --- Create Threads ---
+	k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
+					K_THREAD_STACK_SIZEOF(bmi270_handler_stack_area), bmi270_handler_func, NULL, NULL, NULL,
+					BMI270_HANDLER_PRIORITY, 0, K_MSEC(1000));
+
+	k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
+					K_THREAD_STACK_SIZEOF(bmp390_handler_stack_area), bmp390_handler_func, NULL, NULL, NULL,
+					BMP390_HANDLER_PRIORITY, 0, K_MSEC(1000));
+
+	k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
+					K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
+					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
 
 	LOG_INF("Entering main loop (idle)");
 
