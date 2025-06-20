@@ -358,7 +358,6 @@ static const char *target_ap_addrs[] = {
 	"C0:54:52:53:00:00",	// Random static address of the nrf53840dk
 };
 
-
 /* -------------------- IMU Configurations -------------------- */
 
 bmi270_acc_config_t bmi270_acc_config_high = {
