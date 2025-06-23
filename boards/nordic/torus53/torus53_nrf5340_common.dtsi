@@ -1,0 +1,196 @@
+/*
+ * Copyright (c) 2021 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#include "torus53_nrf5340_common-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/battery/battery.h>
+
+/ {
+	chosen {
+		zephyr,bt-hci-ipc = &ipc0;
+		zephyr,bt-hci = &bt_hci_ipc0;
+		nordic,pm-ext-flash = &mx25r64;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		red_led: led_1 {
+			gpios = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+			label = "RGB red LED";
+		};
+		green_led: led_2 {
+			gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+			label = "RGB green LED";
+		};
+		blue_led: led_3 {
+			gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+			label = "RGB blue LED";
+		};
+	};
+
+	npm1100_force_pwm_mode: npm1100_force_pwm_mode {
+		compatible = "regulator-fixed";
+		regulator-name = "npm1100_force_pwm_mode";
+		enable-gpios = <&gpio0 8 GPIO_ACTIVE_HIGH>;
+		status = "disabled";
+		regulator-boot-on;
+	};
+
+	vbatt: vbatt {
+		compatible = "voltage-divider";
+		io-channels = <&adc 2>;
+		output-ohms = <180000>;
+		full-ohms = <(1500000 + 180000)>;
+		power-gpios = <&gpio0 16 0>;
+	};
+
+	fuel_gauge: fuel_gauge {
+		compatible = "zephyr,fuel-gauge-composite";
+		battery-voltage = <&vbatt>;
+		device-chemistry = "lithium-ion-polymer";
+		ocv-capacity-table-0 = <BATTERY_OCV_CURVE_LITHIUM_ION_POLYMER_DEFAULT>;
+		charge-full-design-microamp-hours = <1350000>;
+	};
+
+	regulator_3v3: regulator-3v3-ctrl {
+		compatible = "regulator-fixed";
+		regulator-name = "ncp114";
+		enable-gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+		regulator-boot-on;
+	};
+
+	sensor_pwr_ctrl: sensor-pwr-ctrl {
+		compatible = "regulator-fixed";
+		regulator-name = "tck106ag";
+		enable-gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+
+	aliases {
+		led0 = &red_led;
+		led1 = &green_led;
+		led2 = &blue_led;
+		watchdog0 = &wdt0;
+	};
+
+	msc_disk0: msc_disk0 {
+		compatible = "zephyr,flash-disk";
+		partition = <&littlefs_storage>;
+		disk-name = "NOR";
+		cache-size = <4096>; 
+	};
+};
+
+&adc {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,vref-mv = <600>;
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+		zephyr,input-positive = <NRF_SAADC_AIN2>;
+	};
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&i2c1 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+
+	pinctrl-0 = <&i2c1_default>;
+	pinctrl-1 = <&i2c1_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	bme688: bme688@76 {
+		compatible = "bosch,bme680";
+		reg = <0x76>;
+	};
+};
+
+&spi3 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio1 4  GPIO_ACTIVE_LOW>;
+
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-1 = <&spi3_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	bmi270: spi-dev-bmi270@0 {
+		compatible = "bosch,bmi270";
+		status = "okay";
+		spi-max-frequency = <8000000>;
+		reg = <0>;
+		irq-gpios=<&gpio0 23 GPIO_ACTIVE_HIGH>; 
+	};
+};
+
+&qspi {
+	status = "okay";
+	pinctrl-0 = <&qspi_default>;
+	pinctrl-1 = <&qspi_sleep>;
+	pinctrl-names = "default", "sleep";
+	mx25r64: mx25r6435f@0 {
+		compatible = "nordic,qspi-nor";
+		reg = <0>;
+		/* MX25R64 supports only pp and pp4io */
+		/* Torus:53 supports only pp and pp2o options */
+		writeoc = "pp";
+		/* MX25R64 supports all readoc options */
+		/* Torus:53 supports only fastread and read2io options */
+		readoc = "read2io";
+		sck-frequency = <8000000>;
+		jedec-id = [c2 28 17];
+		sfdp-bfp = [
+			e5 20 f1 ff  ff ff ff 03  44 eb 08 6b  08 3b 04 bb
+			ee ff ff ff  ff ff 00 ff  ff ff 00 ff  0c 20 0f 52
+			10 d8 00 ff  23 72 f5 00  82 ed 04 cc  44 83 68 44
+			30 b0 30 b0  f7 c4 d5 5c  00 be 29 ff  f0 d0 ff ff
+		];
+		size = <67108864>;
+		has-dpd;
+		t-enter-dpd = <10000>;
+		t-exit-dpd = <35000>;
+
+		/* Below partition is dedicated for littlefs data logging */
+		/* Use this partition together with partition manager pm_static.yml for partition definition */
+		partitions {
+			compatible = "fixed-partitions";
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			littlefs_storage: partition@120000 {
+				label = "lfs_storage";
+				reg = <0x00120000 0x006E0000>; 
+			};
+		};
+	};
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+};
+
+/* Include default memory partition configuration file */
+#include <common/nordic/nrf5340_cpuapp_partition.dtsi>
