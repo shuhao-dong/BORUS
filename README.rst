@@ -71,6 +71,10 @@ Use with Extended Advertisement
 Extended advertisement is a new feature introduced since Bluetooth 5.0. Before implementing it, one has to make sure that the controller on both receiver
 and the transimitter support extended advertisement. Most commercially available USB Bluetooth dongles does NOT support this function.
 
+You will also need to compile and run a programme on RPi to process the extended packet, see `tools/hci_usb_ext_receiver` for more details.
 
+Configure Static Random Address
+------------------------------
 
-You will also need to compile and run a programme on RPi to process the extended packet, see tools/hci_usb_ext_receiver for more details. 
+To configure the static random address, you need to set the variable `wearable_static_addr` in `src/main.c` to the desired address. The address should be a 6-byte array, for example: EE:54:52:53:00:00
+The two MS-bits of the first byte must bt set to 1, this means you can choose from 0xC0 to 0xFF. 
