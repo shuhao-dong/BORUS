@@ -1,4 +1,4 @@
-Overview
+1. Overview
 ********
 
 This is the project code for TORUS using Zephyr RTOS to collect sensor data and 
@@ -22,7 +22,7 @@ tested on Nordic Thingy53. Helper tools are included.
         └── littlefs-fuse         # Tool to convert .bin file to .csv file
 
 
-Requirements
+2. Requirements
 ************
 
 You must use nRF Connect SDK and toolchain version v3.0.2 or above in order to better 
@@ -31,14 +31,16 @@ speficially deleting the msc_disk0 node and the parent node of it.
 
 This firmware is tested with Thingy53 although the target of the build should be set to torus53
 
-Board Definition files
+3. Board Definition files
 **********************
 
 The torus53 board definition files are located in the `boards/nordic/torus53` directory. Attached peripherals are defined in the `torus53_nrf5340_common.dtsi` file.
 
-Building and Running
+4. Building and Running
 ********************
 
+4.1 Flash via VS Code NRF Extension
+-----------------------------------
 The nRF Connect Extension in VSCode is recommended to build and test the code.
 
 To get started with nRF Connect Extension in VSCode, please refer to the official `tutorial <https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-VS-Code/Tutorials>`_
@@ -53,10 +55,27 @@ Thingy53 for more details.
 On successful build and flash, your Thingy53 should light the 3 colour LEDs in series. Note that 
 current code disabled log output over UART, you will need a JTAG connector to achieve RTT log output. 
 
+4.2 Flash via DFU From Application
+----------------------------------
 You could also flash the new firmware via USB to perform a DFU. You will need a signed bin file to perform
 such an action. It is recommended to use dfu-util command line tool or AuTerm GUI software. 
 
-Read External Flash File
+When use dfu-util, first run::
+
+    dfu-util -l
+
+Remember the serial number from the USB device with PID and VID 0001:0001. Then run::
+
+    dfu-util -s <serial number> -e
+
+To enumerate the USB device as a USB DFU class in order to perform DFU. Once the project has been built, you will need two files to flash both Application core and Network core::
+
+    dfu-util -s <serial number> -a 1 -D <~/build/BORUS/zephyr/zephyr.signed.bin>  # For the application core
+    dfu-util -s <serial number> -a 1 -D <~/build/b0n_mcuboot_ipc_radio.signed.bin> # For the network core
+
+For the two image swap mechanism, always download the NEW firmware to alt 1.
+
+5. Read External Flash File
 ************************
 
 To extract file saved in the external flash, we use `littlefs-fuse <https://github.com/littlefs-project/littlefs-fuse>`_ 
@@ -78,7 +97,7 @@ After extracting the file, you can use::
   cd ..
   umount mount
 
-Use with Extended Advertisement
+6. Use with Extended Advertisement
 *******************************
 
 Extended advertisement is a new feature introduced since Bluetooth 5.0. Before implementing it, one has to make sure that the controller on both receiver
@@ -86,8 +105,11 @@ and the transimitter support extended advertisement. Most commercially available
 
 You will also need to compile and run a programme on RPi to process the extended packet, see `tools/hci_usb_ext_receiver` for more details.
 
-Configure Static Random Address
+6.1 Configure Static Random Address
 ------------------------------
 
-To configure the static random address, you need to set the variable `wearable_static_addr` in `src/main.c` to the desired address. The address should be a 6-byte array, for example: EE:54:52:53:00:00
-The two MS-bits of the first byte must bt set to 1, this means you can choose from 0xC0 to 0xFF. 
+To configure the static random address, you need to set the variable `wearable_static_addr` in `src/main.c` to the desired address. The address should be a 6-byte array, for example::
+
+    EE:54:52:53:00:00
+
+where the two MS-bits of the first byte must bt set to 1, this means you can choose from 0xC0 to 0xFF. The rest bytes can be selected freely. We use ASCII representation if TRS, short for TORUS, 54:52:53 as an example. The last 2 bytes can be an incrementing number or house number OR participant number OR wearable number. 
