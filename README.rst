@@ -8,11 +8,19 @@ tested on Nordic Thingy53. Helper tools are included.
 .. code-block:: none
 
     BORUS/
-    ├── src/                 # Sources files for wearable
-    │   ├── driver/          # Driver files
-    │   └── main.c           # Main source code firmware
-    ├── sysbuild/            # Configuration used for sysbuild
-    └── tools/               # Helper tools
+    ├── boards                    # Board definition files to be included in the sysbuild
+    │   └── nordic                # Nordic board definition files
+    │       └── torus53/          # Board definition files speficially for torus53 board
+    ├── src                       # Sources files for wearable
+    │   ├── driver/               # Driver files (battery, IMU, pressure)
+    |   ├── feature/              # Feature files (butterworth filter, gait analysis)
+    │   └── main.c                # Main source code firmware
+    ├── sysbuild                  # Configuration used for sysbuild (ipc_radio and mcuboot)
+    │   ├── ipc_radio             # Configuration for network core firmware: ipc_radio
+    └── tools                     # Helper tools
+        ├── hci_usb_ext_receiver  # HCI controller firmware for nRF52840 dongle attached to RPi
+        └── littlefs-fuse         # Tool to convert .bin file to .csv file
+
 
 Requirements
 ************
