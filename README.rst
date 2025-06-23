@@ -1,4 +1,4 @@
-Overview
+1. Overview
 ********
 
 This is the project code for TORUS using Zephyr RTOS to collect sensor data and 
@@ -14,7 +14,7 @@ tested on Nordic Thingy53. Helper tools are included.
     ├── sysbuild/            # Configuration used for sysbuild
     └── tools/               # Helper tools
 
-Requirements
+2. Requirements
 ************
 
 You must use nRF Connect SDK and toolchain version v2.9.1 or above in order to better 
@@ -23,7 +23,7 @@ speficially deleting the msc_disk0 node and the parent node of it.
 
 For board information, please refer to the datasheet of `Thingy53 <https://www.nordicsemi.com/Products/Development-hardware/Nordic-Thingy-53>`_
 
-Building and Running
+3. Building and Running
 ********************
 
 The nRF Connect Extension in VSCode is recommended to build and test the code.
@@ -43,7 +43,7 @@ current code disabled log output over UART, you will need a JTAG connector to ac
 You could also flash the new firmware via USB to perform a DFU. You will need a signed bin file to perform
 such an action. It is recommended to use dfu-util command line tool or AuTerm GUI software. 
 
-Read External Flash File
+4. Read External Flash File
 ************************
 
 To extract file saved in the external flash, we use `littlefs-fuse <https://github.com/littlefs-project/littlefs-fuse>`_ 
@@ -65,7 +65,7 @@ After extracting the file, you can use::
   cd ..
   umount mount
 
-Use with Extended Advertisement
+5. Use with Extended Advertisement
 *******************************
 
 Extended advertisement is a new feature introduced since Bluetooth 5.0. Before implementing it, one has to make sure that the controller on both receiver
