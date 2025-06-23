@@ -362,6 +362,12 @@ static const char *target_ap_addrs[] = {
 // Define wearable address
 static const char wearable_static_addr[] = "EE:54:52:53:00:00"; 
 
+/**
+ * @brief Set a custom static address for the wearable device.
+ * 
+ * @param addr_string The static address in string format.
+ * @return int 0 on success, negative error code on failure.
+ */
 static int set_custom_static_addr(const char *addr_string)
 {
 	bt_addr_le_t addr;
