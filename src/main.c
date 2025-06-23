@@ -68,7 +68,8 @@ LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
 /* -------------------- Setting subsystem for Encryption and Watchdog -------------------- */
 
-#define BORUS_SETTINGS_PATH	"borus/state" // Save nonce in NVM, allow reboot
+#define BORUS_SETTINGS_PATH_WDT	"borus/state/wdt_cnt" // Save nonce in NVM, allow reboot
+#define BORUS_SETTINGS_PATH_NONCE "borus/state/nonce_ctr"
 #define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
 
 static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
@@ -100,7 +101,7 @@ static int settings_handle_wdt_cnt(const char *name, size_t len, settings_read_c
 	return -ENOENT;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(borus_wdt, BORUS_SETTINGS_PATH, NULL, settings_handle_wdt_cnt, NULL, NULL); 
+SETTINGS_STATIC_HANDLER_DEFINE(borus_wdt, BORUS_SETTINGS_PATH_WDT, NULL, settings_handle_wdt_cnt, NULL, NULL); 
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -1436,7 +1437,7 @@ static int settings_handle_nonce_set(const char *name, size_t len, settings_read
 // Register the settings handler for the specific subtree
 SETTINGS_STATIC_HANDLER_DEFINE(
 	borus_state,
-	BORUS_SETTINGS_PATH,
+	BORUS_SETTINGS_PATH_NONCE,
 	NULL,
 	settings_handle_nonce_set,
 	NULL,
@@ -1721,7 +1722,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 			if (current_time - save_timer > NONCE_SAVE_INTERVAL)
 			{
-				ret = settings_save_one(BORUS_SETTINGS_PATH "/nonce_ctr", (const void *)&nonce_counter, sizeof(nonce_counter));
+				ret = settings_save_one(BORUS_SETTINGS_PATH_NONCE, (const void *)&nonce_counter, sizeof(nonce_counter));
 				if (ret == 0)
 				{
 					LOG_DBG("Saved nonce_counter to NVS: %llu", nonce_counter);
@@ -2140,7 +2141,7 @@ int main(void)
 	if (rst_cause & RESET_WATCHDOG)
 	{
 		wdt_reboot_count ++;
-		settings_save_one(BORUS_SETTINGS_PATH "/wdt_cnt", &wdt_reboot_count, sizeof(wdt_reboot_count));
+		settings_save_one(BORUS_SETTINGS_PATH_WDT, &wdt_reboot_count, sizeof(wdt_reboot_count));
 	}
 
 	if (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD)
