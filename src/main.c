@@ -76,7 +76,7 @@ static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
 
 #define WDT_REBOOT_NUMBER_THRESHOLD	3
 
-#define WDT_TIMEOUT_MS 			4000	// Watchdog timeout
+#define WDT_TIMEOUT_MS 			10000	// Watchdog timeout
 #define WDT_FEED_INTERVAL_MS 	1000	// Watchdog feed interval
 
 static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); // Get the WDT device
@@ -91,8 +91,9 @@ static int settings_handle_wdt_cnt(const char *name, size_t len, settings_read_c
 	if (settings_name_steq(name, "wdt_cnt", &next) && !next)
 	{
 		if (len == sizeof(wdt_reboot_count))
-		{
-			return read_cb(cb_arg, &wdt_reboot_count, sizeof(wdt_reboot_count));
+		{	
+			int ret = read_cb(cb_arg, &wdt_reboot_count, sizeof(wdt_reboot_count));
+			return (ret < 0) ? ret : 0; 
 		}
 		return -EINVAL;
 	}
@@ -2210,7 +2211,7 @@ int main(void)
 		LOG_ERR("Failed to start WDT: %d", ret);
 		return -1;
 	}
-
+	wdt_feed(wdt_dev, wdt_channel_id); 
 	LOG_INF("Step 11: Watchdog set (timeout %d ms)", WDT_TIMEOUT_MS); 
 
 	// --- Initial State ---
