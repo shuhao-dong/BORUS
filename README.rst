@@ -23,6 +23,11 @@ speficially deleting the msc_disk0 node and the parent node of it.
 
 This firmware is tested with Thingy53 although the target of the build should be set to torus53
 
+Board Definition files
+**********************
+
+The torus53 board definition files are located in the `boards/nordic/torus53` directory. Attached peripherals are defined in the `torus53_nrf5340_common.dtsi` file.
+
 Building and Running
 ********************
 
