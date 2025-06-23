@@ -17,8 +17,8 @@ tested on Nordic Thingy53. Helper tools are included.
 Requirements
 ************
 
-You must use nRF Connect SDK and toolchain version v2.9.1 or above in order to better 
-support the partition manager and sysbuild. This project is tested with NCS 2.9.1. Note that is you are using a version below, you have to change app.overlay, 
+You must use nRF Connect SDK and toolchain version v3.0.2 or above in order to better 
+support the partition manager and sysbuild. This project is tested with NCS 3.0.2. Note that is you are using a version below, you have to change app.overlay, 
 speficially deleting the msc_disk0 node and the parent node of it. 
 
 This firmware is tested with Thingy53 although the target of the build should be set to torus53
