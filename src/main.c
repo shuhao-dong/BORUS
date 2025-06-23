@@ -34,6 +34,7 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/addr.h>
 #include "driver/bmi270.h"
 #include <math.h>
 #include "driver/battery.h"
@@ -357,6 +358,26 @@ static const char *target_ap_addrs[] = {
 	"2C:CF:67:89:E0:5D",	// Public address of the built-in RPi controller 
 	"C0:54:52:53:00:00",	// Random static address of the nrf53840dk
 };
+
+// Define wearable address
+static const char wearable_static_addr[] = "EE:54:52:53:00:00"; 
+
+static int set_custom_static_addr(const char *addr_string)
+{
+	bt_addr_le_t addr;
+
+	/* Turn text into bytes */
+	bt_addr_from_str(addr_string, &addr.a); 
+
+	/* Mark it as random static address */
+	addr.type = BT_ADDR_LE_RANDOM;
+	BT_ADDR_SET_STATIC(&addr.a);
+
+	/* Create a new identity that uses this address */
+	int id = bt_id_create(&addr, NULL);
+
+	return (id < 0) ? id : 0; 
+}
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -2015,6 +2036,14 @@ int main(void)
 	LOG_INF("Step 5: File system mounted");
 
 	// --- Initialise Communication ---
+	// Create a new identity to use our own random static address 
+	ret = set_custom_static_addr(wearable_static_addr); 
+	if (ret)
+	{
+		LOG_ERR("ID create failed: %d", ret); 
+		return -1;
+	}
+
 	// BLE
 	ret = bt_enable(NULL);
 	if (ret)
