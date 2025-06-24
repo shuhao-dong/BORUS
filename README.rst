@@ -75,6 +75,16 @@ To enumerate the USB device as a USB DFU class in order to perform DFU. Once the
 
 For the two image swap mechanism, always download the NEW firmware to alt 1.
 
+4.3 Flash via Jlink and nRF Programmer
+--------------------------------------
+Alternatively, one can flash the new firmware using the debug interface via Jlink. You will need a nRF5340/nRF54l15DK for this. Connect the Debug Out port to the port on the wearable. Then connect the IMCU USB to your host machine 
+that has a nRF Connect for Desktop installed. Open the programmer app and update the JLink version if necessary. Add the following two files in your build directory:
+
+  merged_CPUNET.hex   # For network core
+  merged.hex          # For application core
+
+Then click Erase & write, wait until the three LEDs on the wearable flashes. 
+
 5. Read External Flash File
 ************************
 
