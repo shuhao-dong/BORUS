@@ -209,18 +209,18 @@ typedef struct
 // Environmental sensor data structure
 typedef struct
 {
-	uint16_t temperature;
-	uint32_t pressure;
-	uint32_t timestamp;
+	uint16_t temperature;	// Environmental temperature in degree C 
+	uint32_t pressure;		// Environmental pressure in hPa
+	uint32_t timestamp;		// SoC timestamp
 } environment_payload_t;
 
 // Battery voltage data structure
 typedef struct
 {
-	uint8_t battery;
-	uint32_t timestamp;
-	int8_t soc_temp; 
-	uint8_t npm_status;
+	uint8_t battery;		// Battery voltage in mV
+	uint32_t timestamp;		// SoC timestamp
+	int8_t soc_temp; 		// SoC temperature in degree C
+	uint8_t npm_status;		// PMIC error status 
 } monitor_payload_t;
 
 // Unified message structure for message queue
