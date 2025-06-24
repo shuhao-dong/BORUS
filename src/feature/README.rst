@@ -14,4 +14,4 @@ application requirements and the sample frequency of the sensor data. Current im
 3. Gait Analysis
 ****************
 
-Both gait quantity and gait quality is estimated in the source code. 
+Both gait quantity and gait quality is estimated in the source code. The estimated features can be found in the header file definitions. 
