@@ -18,7 +18,7 @@
 
 #include "battery.h"
 
-// LOG_MODULE_REGISTER(BATTERY, CONFIG_ADC_LOG_LEVEL);
+LOG_MODULE_REGISTER(BATTERY, LOG_LEVEL_ERR);
 
 #define VBATT DT_PATH(vbatt)
 #define ZEPHYR_USER DT_PATH(zephyr_user)

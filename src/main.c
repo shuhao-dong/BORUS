@@ -34,6 +34,7 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/addr.h>
 #include "driver/bmi270.h"
 #include <math.h>
 #include "driver/battery.h"
@@ -56,32 +57,58 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/random/random.h>
 #include <zephyr/bluetooth/hci_vs.h>
+#include <zephyr/smf.h>
+#include "feature/dsp_filters.h"
+#include "feature/gait_analysis.h"
+#include <zephyr/drivers/hwinfo.h>
+#include <zephyr/pm/device.h>
+#include "ram_pwrdn.h"
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
-/* -------------------- Watchdog Timer --------------------*/
+/* -------------------- Setting subsystem for Encryption and Watchdog -------------------- */
 
-#define WDT_TIMEOUT_MS 			4000	// Watchdog timeout
+#define BORUS_SETTINGS_PATH_WDT	"borus/state/wdt_cnt" // Save nonce in NVM, allow reboot
+#define BORUS_SETTINGS_PATH_NONCE "borus/state/nonce_ctr"
+#define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
+
+static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
+static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
+
+#define WDT_REBOOT_NUMBER_THRESHOLD	3
+
+#define WDT_TIMEOUT_MS 			10000	// Watchdog timeout
 #define WDT_FEED_INTERVAL_MS 	1000	// Watchdog feed interval
 
 static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); // Get the WDT device
 static int wdt_channel_id = -1;											 // Initialize the WDT channel ID
 static struct k_timer wdt_feed_timer;									 // Timer for feeding the watchdog
 
-/* -------------------- BLE Packet Encryption -------------------- */
+static uint8_t wdt_reboot_count;
+static int settings_handle_wdt_cnt(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	const char *next;
 
-#define BORUS_SETTINGS_PATH	"borus/state" // Save nonce in NVM, allow reboot
-#define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
+	if (settings_name_steq(name, "wdt_cnt", &next) && !next)
+	{
+		if (len == sizeof(wdt_reboot_count))
+		{	
+			int ret = read_cb(cb_arg, &wdt_reboot_count, sizeof(wdt_reboot_count));
+			return (ret < 0) ? ret : 0; 
+		}
+		return -EINVAL;
+	}
+	return -ENOENT;
+}
 
-static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
-static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
+SETTINGS_STATIC_HANDLER_DEFINE(borus_wdt, BORUS_SETTINGS_PATH_WDT, NULL, settings_handle_wdt_cnt, NULL, NULL); 
 
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
 #define BMI270_HANDLER_STACKSIZE 	1024
 #define BMP390_HANDLER_STACKSIZE 	1024
-#define BLE_LOGGER_THREAD_STACKSIZE 2048
+#define BLE_LOGGER_THREAD_STACKSIZE 1536
 
 // Priorities (Lower number = higher priority)
 #define BMI270_HANDLER_PRIORITY 5 	// Highest sensor priority due to higher sample rate
@@ -100,6 +127,12 @@ static struct k_thread ble_logger_thread_data;
 
 /* -------------------- State Machine -------------------- */
 
+static inline const struct smf_state *
+smf_current_state_get(struct smf_ctx *ctx)
+{
+    return ctx->current;          /* the SMF core stores the pointer here   */
+}
+
 // Define the state structure
 typedef enum
 {
@@ -108,6 +141,43 @@ typedef enum
 	STATE_AWAY_LOGGING,		// Away, log sensor data
 	STATE_CHARGING			// USB connected
 } device_state_t;
+
+// Define application-specific flags
+enum app_flags {
+	FLAG_ADV_RUNNING,
+	FLAG_SCAN_ACTIVE,
+};
+
+struct app_ctx {
+	struct smf_ctx smf;	// SMF context
+	atomic_t flags;
+	uint8_t missed_sync_responses;
+	uint32_t sync_check_interval_ms;
+	atomic_t current_adv_type;
+};
+
+static struct app_ctx app;
+
+static void stop_all_advertising(struct app_ctx *ctx);
+static void start_sensor_advertising_ext(struct app_ctx *ctx);
+static void set_imu_rate(bool high_rate);
+
+// Forward declarations of state functions and objects
+static void state_init_entry(void *o);
+static void state_home_entry(void *o);
+static void state_home_exit(void *o);
+static void state_away_entry(void *o);
+static void state_away_exit(void *o);
+static void state_charging_entry(void *o);
+static void state_charging_exit(void *o);
+
+// Define the state table
+static const struct smf_state states[] = {
+    [STATE_INIT]           = SMF_CREATE_STATE(state_init_entry, NULL, NULL, NULL, NULL),
+    [STATE_HOME_ADVERTISING] = SMF_CREATE_STATE(state_home_entry, NULL, state_home_exit, NULL, NULL),
+    [STATE_AWAY_LOGGING]   = SMF_CREATE_STATE(state_away_entry, NULL, state_away_exit, NULL, NULL),
+    [STATE_CHARGING]       = SMF_CREATE_STATE(state_charging_entry, NULL, state_charging_exit, NULL, NULL),
+};
 
 static struct k_work battery_timeout_work; 	// Work item for battery timeout -> Periodic voltage reading
 static struct k_work usb_connect_work;	   	// Work item for USB connect -> CHARGING state
@@ -118,9 +188,6 @@ static struct k_work scan_close_work;
 static struct k_work sync_check_work;
 static struct k_work_delayable sync_adv_stop_work;
 static struct k_work_delayable sync_scan_trigger_work;	
-
-// Use atomic type for state changes between threads/ISRs
-static atomic_t current_state = ATOMIC_INIT(STATE_INIT);
 
 /* -------------------- Message Queue for Sensor Data -------------------- */
 
@@ -168,7 +235,7 @@ typedef struct
 } sensor_message_t;
 
 // Define the message queue
-K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 32, 4);
+K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 16, 4);
 
 /* -------------------- Semaphores for Interrupts -------------------- */
 
@@ -183,10 +250,11 @@ static struct k_timer scan_close_timer; // For scan close
 
 /* -------------------- Configuration Constants -------------------- */
 
-#define BMP390_READ_INTERVAL 					1000 			// Read environment at 1 Hz
+#define BMP390_READ_INTERVAL 					60000 			// Read environment at 1 Hz
 #define BATTERY_READ_INTERVAL 					K_MINUTES(15)	// Every 15 minute read one battery voltage
 #define SENSOR_ADV_PAYLOAD_TYPE 				0x00			// Custom packet type 0x00: Sensor data
 #define SYNC_REQ_ADV_PAYLOAD_TYPE 				0x01			// Custom packet type 0x01: Time sync data
+#define ADV_TYPE_NONE							2				// No advertising active
 #define MAX_IMU_SAMPLES_IN_PACKET 				14				// (251 - 9)/16: 251 bytes max - 9 bytes (env, nonce, etc.), divided by IMU (16 bytes)
 #define ADV_PAYLOAD_UPDATE_INTERVAL_MS 			140				// If sample at 100Hz (10ms) * 14 samples = 140 ms 
 #define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	230				// 1+2+1+1+1+16*14: see prepare packet
@@ -196,13 +264,18 @@ static struct k_timer scan_close_timer; // For scan close
 #define PRESSURE_BASE_HPA_X10 					8500 			// Base offset in hPa x 10
 #define TEMPERATURE_LOW_LIMIT 					30   			// -30 degree as the lowest temperature of interest
 #define TEMPERATURE_HIGH_LIMIT 					40  			// +40 degree as the highest temperature of interest
+#define BATTERY_MV_TO_8BIT_SCALE_FACTOR 		20
 
 /* -------------------- File system and MSC -------------------- */
+
+const struct device *const qspi_dev = DEVICE_DT_GET(DT_INST(0, nordic_qspi_nor)); 
 
 #define LOG_FILE_PATH "/lfs1/imu_log.bin" 				// File path for the log file
 #define LFS_MOUNT_POINT "/lfs1"			  				// Mount point for the file system
 
 USBD_DEFINE_MSC_LUN(NOR, "NOR", "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
+
+static atomic_t flash_can_suspend = ATOMIC_INIT(0);   /* 0 = busy, 1 = OK   */
 
 /* -------------------- BLE Configurations -------------------- */
 
@@ -288,9 +361,31 @@ static const char *target_ap_addrs[] = {
 	"C0:54:52:53:00:00",	// Random static address of the nrf53840dk
 };
 
-static atomic_t adv_running_flag = ATOMIC_INIT(0);						 	// Flag to indicate if any advertisement is running
-static atomic_t current_adv_type = ATOMIC_INIT(SENSOR_ADV_PAYLOAD_TYPE); 	// Flag to indicate current custom advertisement type
-static volatile bool scan_active = false;									// Flag to indicate if scanning 
+// Define wearable address
+static const char wearable_static_addr[] = "EE:54:52:53:00:00"; 
+
+/**
+ * @brief Set a custom static address for the wearable device.
+ * 
+ * @param addr_string The static address in string format.
+ * @return int 0 on success, negative error code on failure.
+ */
+static int set_custom_static_addr(const char *addr_string)
+{
+	bt_addr_le_t addr;
+
+	/* Turn text into bytes */
+	bt_addr_from_str(addr_string, &addr.a); 
+
+	/* Mark it as random static address */
+	addr.type = BT_ADDR_LE_RANDOM;
+	BT_ADDR_SET_STATIC(&addr.a);
+
+	/* Create a new identity that uses this address */
+	int id = bt_id_create(&addr, NULL);
+
+	return (id < 0) ? id : 0; 
+}
 
 /* -------------------- IMU Configurations -------------------- */
 
@@ -341,7 +436,7 @@ BMI270_Context bmi270_ctx;
 static const struct spi_dt_spec bmi270_spi = SPI_DT_SPEC_GET(DT_NODELABEL(bmi270), SPIOP, 0);
 
 // BMP390 (currently BME688 but can replace later)
-const struct device *const dev = DEVICE_DT_GET_ONE(bosch_bme680);
+const struct device *const bme688_dev = DEVICE_DT_GET_ONE(bosch_bme680);
 
 /* -------------------- LittleFS Mount Configuration -------------------- */
 
@@ -359,7 +454,6 @@ static struct fs_mount_t lfs_mount_p = {
 
 int temperature_measure(void)
 {
-
 	int err = 0;
 	struct net_buf *buf, *rsp = NULL;
 	struct bt_hci_rp_vs_read_chip_temp *cmd_params;
@@ -385,20 +479,107 @@ int temperature_measure(void)
 	return rsp_params->temps;
 }
 
-/* -------------------- Home Detection -------------------- */
+/* -------------------- State Management Functions -------------------- */
 
-static uint8_t missed_sync_responses = 0;
-static uint32_t sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
-
-/**
- * @brief Get the current time in milliseconds.
- */
-static inline uint64_t ms_now(void)
+static void stop_all_timers_and_scans(struct app_ctx *ctx)
 {
-	return k_uptime_get();
+    stop_all_advertising(ctx); // This function will now use the context
+    k_timer_stop(&sync_check_timer);
+    k_timer_stop(&scan_close_timer);
+    (void)k_work_cancel_delayable(&sync_adv_stop_work);
+    (void)k_work_cancel_delayable(&sync_scan_trigger_work);
+    if (atomic_test_and_clear_bit(&ctx->flags, FLAG_SCAN_ACTIVE)) {
+        bt_le_scan_stop();
+    }
 }
 
-/* -------------------- State Management Functions -------------------- */
+static void state_init_entry(void *o)
+{
+    struct app_ctx *ctx = o; // Cast the generic object pointer to our context type
+    LOG_DBG("SMF: Entering STATE_INIT");
+    stop_all_timers_and_scans(ctx);
+}
+
+static void state_home_entry(void *o)
+{
+    struct app_ctx *ctx = o;
+    LOG_DBG("SMF: Entering STATE_HOME_ADVERTISING");
+    set_imu_rate(true);
+    ctx->missed_sync_responses = 0;
+    ctx->sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
+    start_sensor_advertising_ext(ctx);
+	if (atomic_cas(&flash_can_suspend, 1, 0))
+	{
+		int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_SUSPEND);
+		if (ret)
+		{
+			LOG_WRN("Failed to suspend external flash: %d", ret);
+		}
+	}
+	
+    k_timer_start(&sync_check_timer, K_MSEC(ctx->sync_check_interval_ms), K_MSEC(ctx->sync_check_interval_ms));
+}
+
+static void state_home_exit(void *o)
+{
+    struct app_ctx *ctx = o;
+    LOG_DBG("SMF: Exiting STATE_HOME_ADVERTISING");
+	enum pm_device_state st;
+	pm_device_state_get(qspi_dev, &st);
+	if (st == PM_DEVICE_STATE_SUSPENDED)
+	{
+		int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_RESUME);
+		if (ret)
+		{
+			LOG_WRN("Failed to resume external flash: %d", ret);
+		}
+	}
+    stop_all_timers_and_scans(ctx);
+}
+
+static void state_away_entry(void *o)
+{
+    struct app_ctx *ctx = o;
+    LOG_DBG("SMF: Entering STATE_AWAY_LOGGING");
+    set_imu_rate(false);
+    stop_all_advertising(ctx);
+	/* ----- This needs to be replaced by BMP390 -----*/
+	int ret = pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_SUSPEND); 
+	if (ret)
+	{
+		LOG_WRN("Failed to suspend BME688: %d", ret); 
+	}
+	/* -----------------------------------------------*/
+    uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
+    k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(ctx->sync_check_interval_ms));
+}
+
+static void state_away_exit(void *o)
+{
+    struct app_ctx *ctx = o;
+    LOG_DBG("SMF: Exiting STATE_AWAY_LOGGING");
+	/* ----- This needs to be replaced by BMP390 -----*/
+	int ret = pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_RESUME);
+	if (ret)
+	{
+		LOG_WRN("Failed to resume BME688: %d", ret); 
+	}
+	/* -----------------------------------------------*/
+    stop_all_timers_and_scans(ctx);
+}
+
+static void state_charging_entry(void *o)
+{
+    struct app_ctx *ctx = o;
+    LOG_DBG("SMF: Entering STATE_CHARGING");
+    stop_all_timers_and_scans(ctx);
+}
+
+static void state_charging_exit(void *o)
+{
+    ARG_UNUSED(o);
+    LOG_DBG("SMF: Exiting STATE_CHARGING");
+}
 
 /**
  * @brief Create an extended advertisement set for the sensor
@@ -482,74 +663,22 @@ static int setup_scan_filter(void)
  *
  * This function stops BLE advertising. It will not stop if already stopped.
  */
-static void stop_all_advertising(void)
+static void stop_all_advertising(struct app_ctx *ctx)
 {
-	int ret_legacy = 0;
-	int ret_ext = 0;
-	bool stopped_something = false;
-
-	// Try to stop legacy advertising (which is now only for sync requests)
-	if (atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag))
+	if (!atomic_test_and_clear_bit(&ctx->flags, FLAG_ADV_RUNNING))
 	{
-		ret_legacy = bt_le_adv_stop(); // Stop legacy
-		if (ret_legacy == 0)
-		{
-			LOG_DBG("Legacy advertising (sync_req) stopped");
-			stopped_something = true;
-		}
-		else if (ret_legacy == -EALREADY)
-		{
-			LOG_DBG("Legacy advertising (sync_req) already stopped");
-			stopped_something = true; // Effectively stopped from our perspective
-		}
-		else if (ret_legacy == -ECONNRESET)
-		{
-			LOG_WRN("Failed to stop legacy adv (sync_req), radio was reset: %d", ret_legacy);
-		}
-		else
-		{
-			LOG_ERR("Failed to stop legacy adv (sync_req): %d", ret_legacy);
-		}
+		return;
 	}
-
-	// Try to stop extended sensor advertising
-	if (g_adv_sensor_ext_handle && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE && atomic_get(&adv_running_flag))
+	
+	if (atomic_get(&ctx->current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
 	{
-		ret_ext = bt_le_ext_adv_stop(g_adv_sensor_ext_handle);
-		if (ret_ext == 0)
-		{
-			LOG_DBG("Extended sensor advertising stopped");
-			stopped_something = true;
-		}
-		else if (ret_ext == -EALREADY)
-		{
-			LOG_DBG("Extended sensor advertising already stopped");
-			stopped_something = true;
-		}
-		else if (ret_ext == -ECONNRESET)
-		{
-			LOG_WRN("Failed to stop extended adv (sensor), radio was reset: %d", ret_ext);
-		}
-		else if (ret_ext != -EINVAL)
-		{ // -EINVAL if handle is invalid
-			LOG_ERR("Failed to stop extended sensor adv: %d", ret_ext);
-		}
-	}
-
-	// If we explicitly stopped something or if adv_running_flag was already 0
-	if (stopped_something || !atomic_get(&adv_running_flag))
+		bt_le_adv_stop();
+	} 
+	else if (atomic_get(&ctx->current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE && g_adv_sensor_ext_handle)
 	{
-		atomic_set(&adv_running_flag, 0);
-		atomic_set(&current_adv_type, 2);
+		bt_le_ext_adv_stop(g_adv_sensor_ext_handle);
 	}
-	else if (!stopped_something && atomic_get(&adv_running_flag))
-	{
-		// This case means adv_running_flag was true, but we didn't match any current_adv_type
-		// to stop it. This might indicate a state inconsistency. Reset flags.
-		LOG_WRN("ADV was running but no matching type to stop. Resetting flags.");
-		atomic_set(&adv_running_flag, 0);
-		atomic_set(&current_adv_type, 2);
-	}
+	atomic_set(&ctx->current_adv_type, ADV_TYPE_NONE);
 }
 
 /**
@@ -558,14 +687,14 @@ static void stop_all_advertising(void)
  * This function starts BLE advertising with the specified parameters and data.
  * It will not start if already running.
  */
-static void start_sensor_advertising_ext(void)
+static void start_sensor_advertising_ext(struct app_ctx *ctx)
 {
 	int ret;
 
 	// Ensure legacy (sync_req) advertising is stopped
-	if (atomic_get(&adv_running_flag)) { // Only try to stop if something is flagged as running
+	if (atomic_test_bit(&ctx->flags, FLAG_ADV_RUNNING)) { // Only try to stop if something is flagged as running
         LOG_DBG("start_sensor_advertising_ext: Stopping existing advertising first.");
-        stop_all_advertising();
+        stop_all_advertising(ctx);
         k_msleep(50); // Allow controller time to process stop
     }
 
@@ -589,19 +718,11 @@ static void start_sensor_advertising_ext(void)
 	if (ret && ret != -EALREADY)
 	{
 		LOG_ERR("Failed to start sensor extended advertisement: %d", ret);
-		atomic_set(&adv_running_flag, 0);
-		atomic_set(&current_adv_type, 2);
 	}
 	else
 	{
-		atomic_set(&adv_running_flag, 1);
-		atomic_set(&current_adv_type, SENSOR_ADV_PAYLOAD_TYPE); // Mark as extended sensor type
-		if (ret == -EALREADY){
-			LOG_DBG("Sensor Ext Adv already started/updated.");
-		}
-		else {
-			LOG_DBG("Sensor Ext Adv started/updated.");
-		}
+		atomic_set_bit(&ctx->flags, FLAG_ADV_RUNNING); 
+		atomic_set(&ctx->current_adv_type, SENSOR_ADV_PAYLOAD_TYPE); 
 	}
 }
 
@@ -611,18 +732,14 @@ static void start_sensor_advertising_ext(void)
  * This function starts a BLE advertisement burst for the AWAY state.
  * It will not start if already running.
  */
-static void start_sync_request_advertising(void)
+static void start_sync_request_advertising(struct app_ctx *ctx)
 {
 	int ret;
 
 	// Ensure other type is stopped first
-	// Ensure extended (sensor) advertising is stopped
-	if (atomic_get(&adv_running_flag)) { // Only try to stop if something is flagged as running
-        LOG_DBG("start_sync_request_advertising: Stopping existing advertising first.");
-        stop_all_advertising();
-        // Add a small delay to allow the controller to process the stop command fully.
-        // This is often necessary when rapidly switching advertising types/sets.
-        k_msleep(20); // Try 20-100ms, tune as needed.
+	if (atomic_test_bit(&ctx->flags, FLAG_ADV_RUNNING)) { 
+        stop_all_advertising(ctx);
+        k_msleep(20); 
     }
 
 	LOG_DBG("Starting AWAY Scan Announcement advertising burst (Type 0x01)");
@@ -631,8 +748,6 @@ static void start_sync_request_advertising(void)
 	if (ret && ret != -EALREADY)
 	{
 		LOG_ERR("Failed to start AWAY Scan Announce advertisement: %d", ret);
-		atomic_set(&adv_running_flag, 0);
-		atomic_set(&current_adv_type, 2);
 	}
 	else if (ret == -EALREADY)
 	{
@@ -641,8 +756,8 @@ static void start_sync_request_advertising(void)
 	else
 	{
 		LOG_DBG("AWAY Scan Announce advertising burst started");
-		atomic_set(&adv_running_flag, 1);
-		atomic_set(&current_adv_type, SYNC_REQ_ADV_PAYLOAD_TYPE);
+		atomic_set_bit(&ctx->flags, FLAG_ADV_RUNNING); 
+		atomic_set(&ctx->current_adv_type, SYNC_REQ_ADV_PAYLOAD_TYPE);
 	}
 }
 
@@ -654,25 +769,14 @@ static void start_sync_request_advertising(void)
 static void sync_adv_stop_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
+	struct app_ctx *ctx = &app;
+	if (atomic_test_bit(&ctx->flags, FLAG_ADV_RUNNING) && atomic_get(&ctx->current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
 	{
-		stop_all_advertising();
-
-		// If we were in HOME state before sync adv, restart sensor ext adv
-		if (atomic_get(&current_state) == STATE_HOME_ADVERTISING)
+		stop_all_advertising(ctx);
+		if (smf_current_state_get(SMF_CTX(ctx)) == &states[STATE_HOME_ADVERTISING])
 		{
-			LOG_DBG("Sync ADV burst finished, restarting sensor EXT adv.");
-			start_sensor_advertising_ext();
+			start_sensor_advertising_ext(ctx);
 		}
-		else
-		{
-			LOG_DBG("Sync ADV burst finished, not in HOME state, no sensor adv restart.");
-		}
-	}
-	else
-	{
-		LOG_WRN("Sync adv stop work ran, but adv not running or not sync type (flag: %d, type: %d)",
-				(int)atomic_get(&adv_running_flag), (int)atomic_get(&current_adv_type));
 	}
 }
 
@@ -687,120 +791,10 @@ static void sync_adv_stop_work_handler(struct k_work *work)
 static void sync_scan_trigger_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	device_state_t state = atomic_get(&current_state);
-
-	if (state == STATE_AWAY_LOGGING || STATE_HOME_ADVERTISING)
+	const struct smf_state *current = smf_current_state_get(SMF_CTX(&app));
+	if (current == &states[STATE_AWAY_LOGGING] || current == &states[STATE_HOME_ADVERTISING])
 	{
-		LOG_DBG("Sync Scan Triggers: Submitting scan_open_work");
 		k_work_submit(&scan_open_work);
-	}
-	else
-	{
-		LOG_WRN("Sync Scan Trigger ran but state is %d", state);
-	}
-}
-
-/**
- * @brief Manage state transitions and associated actions.
- *
- * This function handles entering and exiting states, performing the necessary
- * actions for each state transition.
- *
- * @param new_state The target state to enter.
- */
-static void enter_state(device_state_t new_state)
-{
-	// Check our current state
-	device_state_t old_state = atomic_set(&current_state, new_state);
-
-	// If new = old, do nothing
-	if (old_state == new_state)
-	{
-		LOG_INF("Already in state: %d", new_state);
-		return;
-	}
-
-	LOG_INF("STATE TRANSITION: %d -> %d", old_state, new_state);
-
-	// Actions on EXITING the old state
-	switch (old_state)
-	{
-	case STATE_HOME_ADVERTISING:
-		LOG_DBG("Exiting HOME: Stopping sensor ADV timer and radio.");
-		stop_all_advertising();
-		k_timer_stop(&sync_check_timer);
-		k_timer_stop(&scan_close_timer);
-		if (scan_active)
-		{
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		break;
-	case STATE_AWAY_LOGGING:
-		LOG_DBG("Exiting AWAY: Stopping AWAY ADV timer, work, and radio.");
-
-		k_timer_stop(&sync_check_timer);
-		(void)k_work_cancel_delayable(&sync_adv_stop_work);
-		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
-		stop_all_advertising();
-		k_timer_stop(&scan_close_timer);
-		if (scan_active)
-		{
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		break;
-	case STATE_CHARGING:
-		LOG_DBG("Exiting CHARGING.");
-		break;
-	default:
-		break;
-	}
-
-	// Actions on ENTERING the new state
-	switch (new_state)
-	{
-	case STATE_HOME_ADVERTISING:
-		LOG_INF("Entering Home Adv Mode");
-		set_imu_rate(true); // Set high IMU rate and performance mode
-		missed_sync_responses = 0;
-		sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
-		start_sensor_advertising_ext();																	  // Start BLE advertisement
-		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms)); // Start timer to track in-home
-		break;
-	case STATE_AWAY_LOGGING:
-		LOG_INF("Entering Away Log Mode");
-		set_imu_rate(false);	// Set low IMU rate and low-power mode
-		stop_all_advertising(); // Stop advertising
-		uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
-		k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(sync_check_interval_ms));
-		break;
-	case STATE_CHARGING:
-		// Ensure other activities are stopped
-		LOG_INF("Entering Charging Mode");
-		stop_all_advertising();
-		k_timer_stop(&sync_check_timer);
-		(void)k_work_cancel_delayable(&sync_adv_stop_work);
-		(void)k_work_cancel_delayable(&sync_scan_trigger_work);
-		if (scan_active)
-		{
-			LOG_DBG("Stopped active scan on entering CHARGING state");
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		k_timer_stop(&scan_close_timer);
-		break;
-	case STATE_INIT:
-		LOG_INF("Entering INIT state.");
-		stop_all_advertising();
-		if (scan_active)
-		{
-			bt_le_scan_stop();
-			scan_active = false;
-		}
-		k_timer_stop(&scan_close_timer);
-		k_timer_stop(&sync_check_timer);
-		break;
 	}
 }
 
@@ -820,42 +814,16 @@ static void enter_state(device_state_t new_state)
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 					struct net_buf_simple *buf)
 {
-	if (atomic_get(&current_state) == STATE_CHARGING)
-	{
-		/* ignore all packets while charging */
-		return;
-	}
-
 	char addr_str[BT_ADDR_LE_STR_LEN];
 	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str)); // Still useful for logging
 	LOG_INF("Heartbeat from %s, RSSI=%d", addr_str, rssi);
 
-	// Stop scan and close timer
-	if (scan_active)
+	if (smf_current_state_get(SMF_CTX(&app)) == &states[STATE_CHARGING])
 	{
-		bt_le_scan_stop();
-		scan_active = false;
+		/* ignore all packets while charging */
+		return;
 	}
-	k_timer_stop(&scan_close_timer);
-	(void)k_work_cancel_delayable(&sync_scan_trigger_work); // Cancel pending scan if we got a response early
-
-	// Reset miss counter
-	missed_sync_responses = 0;
-	sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
-
-	// Handle state
-	device_state_t s = atomic_get(&current_state);
-
-	if (s == STATE_AWAY_LOGGING)
-	{
-		LOG_DBG("Sync Response Received: Transitioning to HOME state.");
-		enter_state(STATE_HOME_ADVERTISING);
-	}
-	else if (s == STATE_HOME_ADVERTISING)
-	{
-		LOG_DBG("Sync Response Received: Confirmed HOME state.");
-		start_sensor_advertising_ext();
-	}
+	k_work_submit(&scan_found_ap_work); 
 }
 
 /**
@@ -875,7 +843,7 @@ static void queue_initial_battery_level(void)
 
 	int soc_temp = temperature_measure();
 
-	uint8_t batt_8bit = (uint8_t)(batt_mV / 20); 
+	uint8_t batt_8bit = (uint8_t)(batt_mV / BATTERY_MV_TO_8BIT_SCALE_FACTOR); 
 
 	sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
 	msg.payload.batt.battery = batt_8bit;
@@ -888,7 +856,7 @@ static void queue_initial_battery_level(void)
 	}
 	else
 	{
-		LOG_INF("Step 4.2: Queued initial monitor info, battery: %u%% (%d mV), SoC @ %d degreeC", msg.payload.batt.battery, batt_mV, soc_temp);
+		LOG_INF("Step 4.2: Queued initial monitor info, battery @ %d mV, SoC @ %d degreeC", batt_mV, soc_temp);
 	}
 }
 
@@ -903,47 +871,28 @@ static void queue_initial_battery_level(void)
 static void sync_check_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	struct app_ctx *ctx = &app;
+	const struct smf_state *current = smf_current_state_get(SMF_CTX(ctx));
 
-	device_state_t state = atomic_get(&current_state);
-	// Only proceed if we are actually in AWAY state
-	if (state != STATE_AWAY_LOGGING && state != STATE_HOME_ADVERTISING)
+	if (current != &states[STATE_AWAY_LOGGING] && current != &states[STATE_HOME_ADVERTISING])
 	{
-		LOG_WRN("Sync check work ran in unexpected state %d", state);
 		return;
 	}
 
-	// Calculate the time until next scan window opens
-	uint16_t time_to_announce_s = X_ANNOUNCED_S;
-	LOG_DBG("Preparing Type 0x01 ADV. Announcing scan reference time: %u seconds", time_to_announce_s);
-
-	// Prepare payload: [ Type | Time LSB | MSB ]
 	manuf_payload_sync_req[0] = SYNC_REQ_ADV_PAYLOAD_TYPE;
-	sys_put_le16(time_to_announce_s, &manuf_payload_sync_req[1]);
+	sys_put_le16(X_ANNOUNCED_S, &manuf_payload_sync_req[1]);
 
-	start_sync_request_advertising();
+	start_sync_request_advertising(ctx);
 
-	if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
+	if (atomic_test_bit(&ctx->flags, FLAG_ADV_RUNNING) && atomic_get(&ctx->current_adv_type) == SYNC_REQ_ADV_PAYLOAD_TYPE)
 	{
 		k_work_schedule(&sync_adv_stop_work, SYNC_REQ_ADV_BURST_DURATION);
-
-		int32_t scan_trigger_delay_ms = (time_to_announce_s * 1000) - EARLY_MARGIN_MS;
+		int32_t scan_trigger_delay_ms = (X_ANNOUNCED_S * 1000) - EARLY_MARGIN_MS;
 		if (scan_trigger_delay_ms < 0)
 		{
 			scan_trigger_delay_ms = 0;
 		}
-		LOG_DBG("Scheduling scan trigger work in %d ms.", scan_trigger_delay_ms);
-
-		int ret = k_work_schedule(&sync_scan_trigger_work, K_MSEC(scan_trigger_delay_ms));
-		if (ret < 0)
-		{
-			LOG_ERR("Failed to schedule away scan trigger work (%d)", ret);
-			stop_all_advertising();
-
-			if (state == STATE_HOME_ADVERTISING)
-			{
-				start_sensor_advertising_ext();
-			}
-		}
+		k_work_schedule(&sync_scan_trigger_work, K_MSEC(scan_trigger_delay_ms));
 	}
 	else
 	{
@@ -962,25 +911,17 @@ static void sync_check_work_handler(struct k_work *work)
 static void scan_open_work_handler(struct k_work *w)
 {
 	ARG_UNUSED(w);
+	struct app_ctx *ctx = &app;
+	stop_all_advertising(ctx);
 
-	// Stop any advertising before scanning
-	if (atomic_get(&adv_running_flag))
-	{
-		stop_all_advertising();
-	}
-
-	LOG_DBG("Scan Open Work: Starting scan (State: %d)", (int)atomic_get(&current_state));
 	int err = bt_le_scan_start(&scan_param, scan_cb);
 	if (err && err != -EALREADY)
 	{
 		LOG_ERR("bt_le_scan_start failed (%d)", err);
-		atomic_set(&adv_running_flag, 0);
 		return;
 	}
-	scan_active = true;
-
+	atomic_set_bit(&ctx->flags, FLAG_SCAN_ACTIVE);
 	k_timer_start(&scan_close_timer, K_MSEC(SYNC_SCAN_WINDOW_MS), K_NO_WAIT);
-	LOG_DBG("Scan Open: Scan started (%d ms window).", SYNC_SCAN_WINDOW_MS);
 }
 
 /**
@@ -994,49 +935,34 @@ static void scan_open_work_handler(struct k_work *w)
 static void scan_close_work_handler(struct k_work *w)
 {
 	ARG_UNUSED(w);
+	struct app_ctx *ctx = &app;
 
-	if (scan_active)
+	if (atomic_test_and_clear_bit(&ctx->flags, FLAG_SCAN_ACTIVE))
 	{
 		bt_le_scan_stop();
-		scan_active = false;
 	}
-	LOG_DBG("Scan Close Work: Scan window finished (AP Response MISSING).");
+	LOG_DBG("Scan window finished (AP Response MISSING).");
 
-	device_state_t state = atomic_get(&current_state);
+	const struct smf_state *current = smf_current_state_get(SMF_CTX(ctx));
 
-	if (state == STATE_HOME_ADVERTISING)
+	if (current == &states[STATE_HOME_ADVERTISING])
 	{
-		missed_sync_responses++;
-		LOG_WRN("Sync Response Missed (%u/%u) while HOME", missed_sync_responses, MISSES_BEFORE_AWAY);
-
-		if (missed_sync_responses >= MISSES_BEFORE_AWAY)
+		ctx->missed_sync_responses++;
+		if (ctx->missed_sync_responses >= MISSES_BEFORE_AWAY)
 		{
-			LOG_WRN("Missed %u consecutive Sync Responses, entering AWAY", MISSES_BEFORE_AWAY);
-			enter_state(STATE_AWAY_LOGGING);
+			smf_set_state(SMF_CTX(ctx), &states[STATE_AWAY_LOGGING]);
 		}
 		else
 		{
-			if (!atomic_get(&adv_running_flag))
-			{
-				LOG_DBG("Scan Close (HOME miss): Restarting sensor advertising");
-				start_sensor_advertising_ext();
-			}
+			start_sensor_advertising_ext(ctx);
 		}
 	}
-	else if (state == STATE_AWAY_LOGGING)
+	else if (current == &states[STATE_AWAY_LOGGING])
 	{
-		LOG_WRN("Sync Response MISSED while AWAY");
-		sync_check_interval_ms = MIN(sync_check_interval_ms * 2, AWAY_BACKOFF_MAX_INTERVAL_MS);
-		sync_check_interval_ms += sys_rand32_get() * (SYNC_CHECK_INTERVAL_BASE_MS / 2);
-		sync_check_interval_ms = MIN(sync_check_interval_ms, AWAY_BACKOFF_MAX_INTERVAL_MS);
-
-		LOG_INF("AWAY Backoff: Next sync check attempt in %u ms", sync_check_interval_ms);
-		k_timer_start(&sync_check_timer, K_MSEC(sync_check_interval_ms), K_MSEC(sync_check_interval_ms));
-
-		if (atomic_get(&adv_running_flag))
-		{
-			stop_all_advertising();
-		}
+		ctx->sync_check_interval_ms = MIN(ctx->sync_check_interval_ms * 2, AWAY_BACKOFF_MAX_INTERVAL_MS);
+		ctx->sync_check_interval_ms += sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 2);
+		ctx->sync_check_interval_ms = MIN(ctx->sync_check_interval_ms, AWAY_BACKOFF_MAX_INTERVAL_MS);
+		k_timer_start(&sync_check_timer, K_MSEC(ctx->sync_check_interval_ms), K_MSEC(ctx->sync_check_interval_ms));
 	}
 }
 
@@ -1057,7 +983,7 @@ static void battery_timeout_work_handler(struct k_work *work)
 
 	if (batt_mV >= 0)
 	{ 	// Check for valid reading
-		uint8_t batt_8bit = (uint8_t)(batt_mV / 20); 
+		uint8_t batt_8bit = (uint8_t)(batt_mV / BATTERY_MV_TO_8BIT_SCALE_FACTOR); 
 		sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
 		msg.payload.batt.battery = batt_8bit;
 		msg.payload.batt.timestamp = k_uptime_get_32();
@@ -1067,7 +993,7 @@ static void battery_timeout_work_handler(struct k_work *work)
 		{
 			LOG_WRN("Battery queue full");
 		}
-		LOG_DBG("Battery level: %u%% (%d mV)", msg.payload.batt.battery, batt_mV);
+		LOG_DBG("Battery level: %d mV", batt_mV);
 	}
 	else
 	{
@@ -1086,11 +1012,7 @@ static void battery_timeout_work_handler(struct k_work *work)
 static void usb_connect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_DBG("Workqueue: USB connected, entering CHARGING");
-	if (atomic_get(&current_state) != STATE_CHARGING)
-	{
-		enter_state(STATE_CHARGING);
-	}
+	smf_set_state(SMF_CTX(&app), &states[STATE_CHARGING]); 
 }
 
 /**
@@ -1104,18 +1026,7 @@ static void usb_connect_work_handler(struct k_work *work)
 static void usb_disconnect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_DBG("Workqueue: USB disconnected, entering HOME");
-
-	if (atomic_get(&current_state) == STATE_CHARGING)
-	{
-		LOG_DBG("Workqueue: USB Disconnected, entering AWAY state to initiate sync check");
-		enter_state(STATE_HOME_ADVERTISING);
-	}
-	else
-	{
-		LOG_WRN("USB disconnect event when not in CHARGING state (%d). Forcing AWAY state.", (int)atomic_get(&current_state));
-		enter_state(STATE_HOME_ADVERTISING);
-	}
+	smf_set_state(SMF_CTX(&app), &states[STATE_HOME_ADVERTISING]); 
 }
 
 /**
@@ -1129,23 +1040,29 @@ static void usb_disconnect_work_handler(struct k_work *work)
 static void scan_found_ap_work_handler(struct k_work *k_work)
 {
 	ARG_UNUSED(k_work);
+	struct app_ctx *ctx = &app;
 
-	if (atomic_get(&current_state) == STATE_CHARGING)
+	if (smf_current_state_get(SMF_CTX(ctx)) == &states[STATE_CHARGING])
 	{
-		LOG_DBG("Workqueue: Scan found AP, but in CHARGING state");
 		return;
 	}
 
-	LOG_DBG("Workqueue: Scan found AP, entering HOME");
-
-	if (atomic_get(&current_state) != STATE_HOME_ADVERTISING)
+	/* 1.  Cancel the scan-close timer and stop the scan */
+	if (atomic_test_and_clear_bit(&ctx->flags, FLAG_SCAN_ACTIVE))
 	{
-		LOG_INF("Workqueue: Scan found AP -> Entering HOME state.");
-		enter_state(STATE_HOME_ADVERTISING);
+		bt_le_scan_stop();
+	}
+	k_timer_stop(&scan_close_timer); /* <- new */
+	ctx->missed_sync_responses = 0;	 /* <- new */
+
+	if (smf_current_state_get(SMF_CTX(ctx)) != &states[STATE_HOME_ADVERTISING])
+	{
+		smf_set_state(SMF_CTX(ctx), &states[STATE_HOME_ADVERTISING]);
 	}
 	else
 	{
-		LOG_DBG("Workqueue: Scan found AP while already HOME.");
+		/* already home – just restart the sensor advertiser if needed */
+		start_sensor_advertising_ext(ctx);
 	}
 }
 
@@ -1160,8 +1077,8 @@ static void scan_found_ap_work_handler(struct k_work *k_work)
 static void sync_check_timer_expiry(struct k_timer *timer_id)
 {
 	ARG_UNUSED(timer_id);
-	device_state_t state = atomic_get(&current_state);
-	if (state == STATE_AWAY_LOGGING || state == STATE_HOME_ADVERTISING)
+	const struct smf_state *current = smf_current_state_get(SMF_CTX(&app));
+	if (current == &states[STATE_AWAY_LOGGING] || current == &states[STATE_HOME_ADVERTISING])
 	{
 		k_work_submit(&sync_check_work);
 	}
@@ -1206,7 +1123,6 @@ void bmi270_int1_interrupt_triggered(const struct device *dev, struct gpio_callb
  */
 void battery_timer_expiry(struct k_timer *timer_id)
 {
-	LOG_DBG("Heartbeat timer expired, submitting work");
 	k_work_submit(&battery_timeout_work);
 }
 
@@ -1238,16 +1154,13 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 	switch (status)
 	{
 	case USB_DC_CONNECTED:
-		LOG_DBG("USB Connected - Entering Charging State");
 		k_work_submit(&usb_connect_work);
 		break;
 	case USB_DC_DISCONNECTED:
-		LOG_DBG("USB Disconnected");
 		k_work_submit(&usb_disconnect_work);
 		break;
 	case USB_DC_CONFIGURED:
-		LOG_INF("USB Configured by Host, ready for reading");
-		if (atomic_get(&current_state) != STATE_CHARGING)
+		if (smf_current_state_get(SMF_CTX(&app)) != &states[STATE_CHARGING])
 		{
 			k_work_submit(&usb_connect_work);
 		}
@@ -1369,9 +1282,10 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 			BMI270_IMU_Value raw_value;
 
 			// Determine which config to use based on current state
-			device_state_t state = atomic_get(&current_state);
-			uint8_t acc_range = (state == STATE_HOME_ADVERTISING) ? bmi270_acc_config_high.acc_range : bmi270_acc_config_low.acc_range;
-			uint8_t gyr_range = (state == STATE_HOME_ADVERTISING) ? bmi270_gyr_config_high.gyr_range : bmi270_gyr_config_low.gyr_range;
+			const struct smf_state *current = smf_current_state_get(SMF_CTX(&app)); 
+			
+			uint8_t acc_range = (current == &states[STATE_HOME_ADVERTISING]) ? bmi270_acc_config_high.acc_range : bmi270_acc_config_low.acc_range;
+			uint8_t gyr_range = (current == &states[STATE_HOME_ADVERTISING]) ? bmi270_gyr_config_high.gyr_range : bmi270_gyr_config_low.gyr_range;
 
 			bool read_ok = bmi270_read_imu(&bmi270_ctx, &raw_value, acc_range, gyr_range);
 
@@ -1385,7 +1299,23 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				msg.payload.imu.imu_data[4] = (int16_t)(sensor_value_to_double(&raw_value.gyro.y) * 100);
 				msg.payload.imu.imu_data[5] = (int16_t)(sensor_value_to_double(&raw_value.gyro.z) * 100);
 				msg.payload.imu.timestamp = k_uptime_get_32();
+				
+				// DSP process try 
+				float32_t ax = msg.payload.imu.imu_data[0] / 100.0f;
+				float32_t ay = msg.payload.imu.imu_data[1] / 100.0f;
+				float32_t az = msg.payload.imu.imu_data[2] / 100.0f;
 
+				// Only perform gait analysis when we are in HOME or AWAY
+				if (current != &states[STATE_CHARGING])
+				{
+					// Gait analysis
+					float32_t bp_out;
+					dsp_filters_process(ax, ay, az, NULL, &bp_out);
+
+					struct gait_metrics gm;
+					gait_analyse(bp_out, &gm);
+				}
+				
 				if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 				{
 					LOG_WRN("BMI270 queue full");
@@ -1423,7 +1353,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	while (1)
 	{
 		// --- 1Hz BME680 Reading ---
-		if (!dev || !device_is_ready(dev))
+		if (!bme688_dev || !device_is_ready(bme688_dev))
 		{
 			LOG_ERR("BME680 device not ready in handler thread");
 			k_sleep(K_SECONDS(5));
@@ -1431,7 +1361,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 		}
 
 		struct sensor_value temp, press;
-		int ret = sensor_sample_fetch(dev);
+		int ret = sensor_sample_fetch(bme688_dev);
 		if (ret < 0)
 		{
 			LOG_ERR("Failed to fetch from BME688: %d", ret);
@@ -1439,7 +1369,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 			continue;
 		}
 
-		if (sensor_channel_get(dev, SENSOR_CHAN_AMBIENT_TEMP, &temp) == 0 && sensor_channel_get(dev, SENSOR_CHAN_PRESS, &press) == 0)
+		if (sensor_channel_get(bme688_dev, SENSOR_CHAN_AMBIENT_TEMP, &temp) == 0 && sensor_channel_get(bme688_dev, SENSOR_CHAN_PRESS, &press) == 0)
 		{
 			sensor_message_t msg = {.type = SENSOR_MSG_TYPE_ENVIRONMENT};
 			msg.payload.env.temperature = (uint16_t)(sensor_value_to_double(&temp) * 100);
@@ -1507,7 +1437,7 @@ static int settings_handle_nonce_set(const char *name, size_t len, settings_read
 // Register the settings handler for the specific subtree
 SETTINGS_STATIC_HANDLER_DEFINE(
 	borus_state,
-	BORUS_SETTINGS_PATH,
+	BORUS_SETTINGS_PATH_NONCE,
 	NULL,
 	settings_handle_nonce_set,
 	NULL,
@@ -1652,6 +1582,8 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 	LOG_DBG("BLE Logger thread started");
 
+	struct app_ctx *ctx = &app; 
+
 	int ret;
 	sensor_message_t received_msg;						// Received from message queue
 	ble_packet_t current_sensor_state = {0};			// Initialise
@@ -1672,8 +1604,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 	while (1)
 	{
-		bool new_data_for_adv = false;
-
 		/* Get each message from the message queue */
 		ret = k_msgq_get(&sensor_message_queue, &received_msg, K_FOREVER);
 		if (ret == 0)
@@ -1699,7 +1629,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				{
 					current_sensor_state.timestamp = received_msg.payload.env.timestamp;
 				}
-				new_data_for_adv = true;
 				break;
 			case SENSOR_MSG_TYPE_MONITOR:
 				current_sensor_state.battery = received_msg.payload.batt.battery;
@@ -1709,7 +1638,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				{
 					current_sensor_state.timestamp = received_msg.payload.batt.timestamp;
 				}
-				new_data_for_adv = true;
 				break;
 			default:
 				break;
@@ -1723,11 +1651,11 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 		}
 
 		// Check the current device state
-		device_state_t active_state = atomic_get(&current_state);
+		const struct smf_state *active_state = smf_current_state_get(SMF_CTX(ctx));
 		uint32_t current_time = k_uptime_get_32();
 
 		// Perform actions based on state only if new data arrived
-		if (active_state == STATE_HOME_ADVERTISING)
+		if (active_state == &states[STATE_HOME_ADVERTISING])
 		{
 			if (file_is_open)
 			{
@@ -1744,6 +1672,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				file_is_open = false;
 				log_write_count = 0; // Reset sync counter
+				atomic_set(&flash_can_suspend, 1); 
 			}
 
 			bool send_adv = false;
@@ -1774,7 +1703,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				else
 				{
-					if (atomic_get(&adv_running_flag) && atomic_get(&current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE)
+					if (atomic_test_bit(&ctx->flags, FLAG_ADV_RUNNING) && atomic_get(&ctx->current_adv_type) == SENSOR_ADV_PAYLOAD_TYPE)
 					{
 						ret = bt_le_ext_adv_set_data(g_adv_sensor_ext_handle, ad_sensor_agg, ARRAY_SIZE(ad_sensor_agg), NULL, 0);
 						if (ret && ret != -EALREADY)
@@ -1793,7 +1722,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 			if (current_time - save_timer > NONCE_SAVE_INTERVAL)
 			{
-				ret = settings_save_one(BORUS_SETTINGS_PATH "/nonce_ctr", (const void *)&nonce_counter, sizeof(nonce_counter));
+				ret = settings_save_one(BORUS_SETTINGS_PATH_NONCE, (const void *)&nonce_counter, sizeof(nonce_counter));
 				if (ret == 0)
 				{
 					LOG_DBG("Saved nonce_counter to NVS: %llu", nonce_counter);
@@ -1805,7 +1734,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				save_timer = k_uptime_get_32();
 			}
 		}
-		else if (active_state == STATE_AWAY_LOGGING)
+		else if (active_state == &states[STATE_AWAY_LOGGING])
 		{
 			if (imu_batch_count > 0)
 			{
@@ -1861,12 +1790,14 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 						}
 						fs_close(&log_file); // Close on error
 						file_is_open = false;
+						atomic_set(&flash_can_suspend, 1);
 					}
 					else if (written < sizeof(log_record))
 					{
 						LOG_WRN("Partial write to log file: %d / %u bytes", (int)written, sizeof(log_record));
 						fs_close(&log_file);
 						file_is_open = false;
+						atomic_set(&flash_can_suspend, 1);
 					}
 					else
 					{
@@ -1909,7 +1840,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 			// Close file if open (transitioned from AWAY)
 			if (file_is_open)
 			{
-				LOG_DBG("State %d: Closing log file.", active_state);
+				LOG_DBG("Closing log file.");
 				ret = fs_sync(&log_file); // Sync before closing
 				if (ret < 0)
 				{
@@ -1922,6 +1853,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				file_is_open = false;
 				log_write_count = 0;
+				atomic_set(&flash_can_suspend, 1);
 			}
 			if (imu_batch_count > 0)
 			{
@@ -2067,7 +1999,7 @@ int main(void)
 	LOG_INF("Step 2.2: BMI270 sensor feature configured");
 
 	// BME688 (Environmental)
-	if (!device_is_ready(dev))
+	if (!device_is_ready(bme688_dev))
 	{
 		LOG_ERR("BME688: device not ready");
 		return -1;
@@ -2112,6 +2044,14 @@ int main(void)
 	LOG_INF("Step 5: File system mounted");
 
 	// --- Initialise Communication ---
+	// Create a new identity to use our own random static address 
+	ret = set_custom_static_addr(wearable_static_addr); 
+	if (ret)
+	{
+		LOG_ERR("ID create failed: %d", ret); 
+		return -1;
+	}
+
 	// BLE
 	ret = bt_enable(NULL);
 	if (ret)
@@ -2194,7 +2134,22 @@ int main(void)
 		LOG_ERR("Failed to load settings for 'borus/state': %d", ret);
 	}
 
-	LOG_INF("Step 8: Settings loaded, nonce = %llu", nonce_counter);
+	uint32_t rst_cause = 0;
+	hwinfo_get_reset_cause(&rst_cause);
+	hwinfo_clear_reset_cause();
+
+	if (rst_cause & RESET_WATCHDOG)
+	{
+		wdt_reboot_count ++;
+		settings_save_one(BORUS_SETTINGS_PATH_WDT, &wdt_reboot_count, sizeof(wdt_reboot_count));
+	}
+
+	if (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD)
+	{
+		gpio_pin_set_dt(&leds[0], 1);
+	}
+	
+	LOG_INF("Step 8: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
 
 	// USB Device Subsystem
 	ret = usb_enable(usb_dc_status_cb); // Register callback
@@ -2257,12 +2212,23 @@ int main(void)
 		LOG_ERR("Failed to start WDT: %d", ret);
 		return -1;
 	}
+	wdt_feed(wdt_dev, wdt_channel_id); 
+	LOG_INF("Step 11: Watchdog set (timeout %d ms)", WDT_TIMEOUT_MS); 
 
-	LOG_INF("Step 11: Watchdog started (timeout %d ms)", WDT_TIMEOUT_MS); 
+	// --- Initial State ---
+	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
+	atomic_set(&app.flags, 0); // Clear all flags
+    atomic_set(&app.current_adv_type, 2); // '2' for idle/none
+    app.missed_sync_responses = 0;
+    app.sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
 
-	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
-	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
-	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
+	// Set the initial state of the SMF. This will call state_init_entry().
+    smf_set_initial(SMF_CTX(&app), &states[STATE_INIT]);
+	LOG_DBG("Transitioning to determined initial state: %d", initial_state);
+	smf_set_state(SMF_CTX(&app), &states[initial_state]);
+
+	dsp_filters_init(); 
+	gait_init(); 
 
 	/* LED to indicate successful initialisation sequence */
 	for (int i = 0; i < 3; i++)
@@ -2272,25 +2238,31 @@ int main(void)
 		gpio_pin_set_dt(&leds[i], 0);
 	}
 
+	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
+	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
+	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
+
 	// --- Create Threads ---
-	k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
+	k_tid_t tid;
+
+	tid = k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
 					K_THREAD_STACK_SIZEOF(bmi270_handler_stack_area), bmi270_handler_func, NULL, NULL, NULL,
 					BMI270_HANDLER_PRIORITY, 0, K_MSEC(1000));
+	k_thread_name_set(tid, "bmi270"); 
 
-	k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
+	tid = k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
 					K_THREAD_STACK_SIZEOF(bmp390_handler_stack_area), bmp390_handler_func, NULL, NULL, NULL,
 					BMP390_HANDLER_PRIORITY, 0, K_MSEC(1000));
+	k_thread_name_set(tid, "bmp390");
 
-	k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
+	tid = k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
 					K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
 					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
-
-	// --- Initial State ---
-	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
-	LOG_DBG("Setting *initial state* determined state to: %d", initial_state);
-	enter_state(initial_state);
+	k_thread_name_set(tid, "ble_log"); 
 
 	LOG_INF("Entering main loop (idle)");
+
+	power_down_unused_ram(); 
 
 	while (1)
 	{

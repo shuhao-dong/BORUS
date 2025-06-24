@@ -11,7 +11,7 @@
 #define BMI270_WR_LEN   256
 #define BMI270_INTER_WRITE_DELAY_US     1000
 
-LOG_MODULE_REGISTER(BMI270, LOG_LEVEL_DBG); 
+LOG_MODULE_REGISTER(BMI270, LOG_LEVEL_INF); 
 
 const uint8_t bmi270_config_file[] = {
     0xc8, 0x2e, 0x00, 0x2e, 0x80, 0x2e, 0x3d, 0xb1, 0xc8, 0x2e, 0x00, 0x2e, 0x80, 0x2e, 0x91, 0x03, 0x80, 0x2e, 0xbc,
@@ -796,7 +796,7 @@ int bmi270_lock_spi_interface(BMI270_Context *ctx)
     /* 4. Give the part a few µs to latch the new primary IF --------- */
     k_busy_wait(50);                    /* t_IF_SW = 40 ns min        */
 
-    LOG_INF("BMI270 locked to SPI (NV_CONF = 0x%02X)", nv);
+    LOG_DBG("BMI270 locked to SPI (NV_CONF = 0x%02X)", nv);
     return 0;
 }
 
@@ -846,7 +846,7 @@ bool bmi270_init(BMI270_Context *ctx, const struct spi_dt_spec *spec){
     /* Check if the sensor has already been initialised */
     ret = bmi270_reg_read(ctx, BMI270_REG_INTERNAL_STATUS, &values, sizeof(values)); 
     if (ret != 0){
-        LOG_INF("Failed to check sensor status");
+        LOG_ERR("Failed to check sensor status");
         return false;
     }
     if ((values & BIT(0))){
@@ -858,7 +858,7 @@ bool bmi270_init(BMI270_Context *ctx, const struct spi_dt_spec *spec){
         /* Check sensor ID */
         ret = bmi270_reg_read(ctx, BMI270_REG_CHIP_ID, &values, sizeof(values)); 
         if (ret != 0){
-            LOG_INF("Failed to read sensor ID"); 
+            LOG_ERR("Failed to read sensor ID"); 
             return false; 
         }
 
@@ -870,54 +870,54 @@ bool bmi270_init(BMI270_Context *ctx, const struct spi_dt_spec *spec){
         tx_buf = BMI270_FAST_POWER_UP_DIS | BMI270_FIFO_SELF_WAKE_UP_ON | BMI270_ADV_POWER_SAVE_DIS; 
         ret = bmi270_reg_write_with_delay(ctx, BMI270_REG_PWR_CONF, &tx_buf, sizeof(tx_buf), 450); 
         if (ret != 0){
-            LOG_INF("Failed to turn off advanced power save mode");
+            LOG_ERR("Failed to turn off advanced power save mode");
             return false; 
         }
 
-        LOG_INF("Disabled advanced power save mode");
+        LOG_DBG("Disabled advanced power save mode");
 
         /* Preapre to load configuration file */
         tx_buf = 0x00;
         ret = bmi270_reg_write(ctx, BMI270_REG_INIT_CTRL, &tx_buf, sizeof(tx_buf)); 
         if (ret != 0){
-            LOG_INF("Failed to prepare configuration file loading");
+            LOG_ERR("Failed to prepare configuration file loading");
             return false;
         }
 
-        LOG_INF("Prepared to load configuration file");
+        LOG_DBG("Prepared to load configuration file");
 
         /* Upload configuration file */
         ret = write_config_file(ctx); 
         if (ret != 0){
-            LOG_INF("Failed to upload configuration file");
+            LOG_ERR("Failed to upload configuration file");
             return false;
         }
 
-        LOG_INF("Configuration file uploaded"); 
+        LOG_DBG("Configuration file uploaded"); 
 
         /* Complete config load */
         tx_buf = 0x01;
         ret = bmi270_reg_write_with_delay(ctx, BMI270_REG_INIT_CTRL, &tx_buf, sizeof(tx_buf), 30000); 
         if (ret != 0){
-            LOG_INF("Failed to complete config load");
+            LOG_ERR("Failed to complete config load");
             return false;
         }
 
-        LOG_INF("Completed config load");
+        LOG_DBG("Completed config load");
 
         /* Check sensor status */
         ret = bmi270_reg_read(ctx, BMI270_REG_INTERNAL_STATUS, &values, sizeof(values)); 
         if (ret != 0){
-            LOG_INF("Failed to check sensor status");
+            LOG_ERR("Failed to check sensor status");
             return false;
         }
         /* Successful init requires bit0 to be set */
         if ((values & BIT(0)) != 1){
-            LOG_INF("Initialisation Failed! Status: 0x%02X", values);
+            LOG_ERR("Initialisation Failed! Status: 0x%02X", values);
             return false;
         }
 
-        LOG_INF("BMI270 initialised"); 
+        LOG_DBG("BMI270 initialised"); 
         return true; 
     }
 }
@@ -962,7 +962,7 @@ int bmi270_conf_fifo(BMI270_Context *ctx, uint16_t watermark, bmi270_fifo_config
         return ret;
     }
     
-    LOG_INF("BMI270 FIFO configuration successful");
+    LOG_DBG("BMI270 FIFO configuration successful");
     return 0; 
 }
 
@@ -989,7 +989,7 @@ int bmi270_conf_acc(BMI270_Context *ctx, bmi270_acc_config_t *config){
         LOG_ERR("Failed to configure accelerometer @0x%02X", BMI270_REG_ACC_CONF);
         return ret;
     }
-    LOG_INF("BMI270 accelerometer configuration successful"); 
+    LOG_DBG("BMI270 accelerometer configuration successful"); 
     return 0; 
 }
 
@@ -1016,7 +1016,7 @@ int bmi270_conf_gyr(BMI270_Context *ctx, bmi270_gyr_config_t *config){
         LOG_ERR("Failed to configure gyroscope @0x%02X", BMI270_REG_GYR_CONF);
         return ret;
     }
-    LOG_INF("BMI270 gyroscope configuration successful");
+    LOG_DBG("BMI270 gyroscope configuration successful");
     return 0; 
 }
 
@@ -1054,7 +1054,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1);
         /* Configure acc and gyr to performance mode - (typ.) 970uA */
         bmi270_conf_pwr(ctx, &bmi270_performance_mode); 
-        LOG_INF("BMI270 configured to performance mode");
+        LOG_DBG("BMI270 configured to performance mode");
         break;
     case BMI270_NORMAL_MODE:
         /* Disable advanced power save mode */
@@ -1062,7 +1062,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1); 
         /* Configure acc and gyr to normal mode - (typ.) 685uA */
         bmi270_conf_pwr(ctx, &bmi270_normal_mode); 
-        LOG_INF("BMI270 configured to normal mode");
+        LOG_DBG("BMI270 configured to normal mode");
         break;
     case BMI270_LOW_POWER_MODE:
         /* Disable temperature and aux sensor */
@@ -1073,7 +1073,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1); 
         /* Configure acc and gyr to low power mode - (typ.) 420uA */
         bmi270_conf_pwr(ctx, &bmi270_low_power_mode);
-        LOG_INF("BMI270 configured to low power mode: gyro and acc enabled");
+        LOG_DBG("BMI270 configured to low power mode: gyro and acc enabled");
         break;
     case BMI270_SUSPEND_MODE:
         /* Check if all sensors are disabled */
@@ -1086,7 +1086,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1); 
         /* Disable all sensors - (typ.) 3.5uA */
         bmi270_enable_sensor(ctx, 0, 0, 0, 0);
-        LOG_INF("BMI270 configured to suspend mode: all sensors disabled"); 
+        LOG_DBG("BMI270 configured to suspend mode: all sensors disabled"); 
         break;
     default:
         break;
@@ -1389,7 +1389,7 @@ uint16_t bmi270_read_int_status(BMI270_Context *ctx){
     if (ret != 0){
         LOG_ERR("Failed to read interrupt status");
     }
-    LOG_INF("The interrupt status is: 0x%02X\t0x%02X", int_status[0], int_status[1]); 
+    LOG_DBG("The interrupt status is: 0x%02X\t0x%02X", int_status[0], int_status[1]); 
 
     uint16_t ret_status = (int_status[0] << 8) | (int_status[1]); 
     
