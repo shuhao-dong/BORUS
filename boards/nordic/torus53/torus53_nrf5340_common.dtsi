@@ -30,6 +30,21 @@
 		};
 	};
 
+	npm1100_status: npm1100_status {
+		compatible = "gpio-keys"; 
+		label = "npm1100 status lines";
+
+		chg_pin: chg_pin {
+			gpios = <&gpio1 0 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; 
+			label = "npm1100 CHG status";
+		};
+
+		err_pin: err_pin {
+			gpios = <&gpio1 1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "npm1100 ERR status"; 
+		};
+	};
+
 	npm1100_force_pwm_mode: npm1100_force_pwm_mode {
 		compatible = "regulator-fixed";
 		regulator-name = "npm1100_force_pwm_mode";
@@ -73,6 +88,8 @@
 		led1 = &green_led;
 		led2 = &blue_led;
 		watchdog0 = &wdt0;
+		npm1100chg = &chg_pin;
+		npm1100err = &err_pin; 
 	};
 
 	msc_disk0: msc_disk0 {

@@ -416,17 +416,39 @@ bmi270_gyr_config_t bmi270_gyr_config_low = {
 
 /* -------------------- GPIO Configuration -------------------- */
 
+// 1. LEDs 
 static const struct gpio_dt_spec leds[3] = {
 	GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios), // Red LED
 	GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios), // Green LED
 	GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios), // Blue LED
 };
 
+// 2. NPM1100 
+static const struct gpio_dt_spec npm_status[2] = {
+	GPIO_DT_SPEC_GET(DT_ALIAS(npm1100chg), gpios),	// PMIC CHG status pin
+	GPIO_DT_SPEC_GET(DT_ALIAS(npm1100err), gpios), 	// PMIC ERR status pin 
+};
+
+static volatile bool charging = false; 
+static volatile int usb_status = -1; 
+static void charging_status_handler(struct k_work *w); 
+K_WORK_DELAYABLE_DEFINE(charging_status_work, charging_status_handler);
+
+static void charging_status_handler(struct k_work *w)
+{
+	gpio_pin_toggle_dt(&leds[2]);
+	if (charging)
+	{
+		k_work_schedule(&charging_status_work, K_MSEC(1000)); 
+	}
+}
+
+// NPM1100 CHG Interrupt pin
+static struct gpio_callback npm1100_chg_interrupts_cb_data; 
+
 // BMI270 Interrupt Pin
 static const struct gpio_dt_spec bmi270_interrupts = GPIO_DT_SPEC_GET_OR(DT_NODELABEL(bmi270), irq_gpios, {0});
 static struct gpio_callback bmi270_interrupts_cb_data;
-
-// BMP390 Interrupt Pin
 
 /* -------------------- Sensor Device Handles -------------------- */
 
@@ -1114,6 +1136,32 @@ void bmi270_int1_interrupt_triggered(const struct device *dev, struct gpio_callb
 }
 
 /**
+ * @brief ISR for NPM1100 CHG interrupt events.
+ * 
+ * This function is triggered when the NPM1100 CHG interrupt pin is activated.
+ * 
+ * @param dev Pointer to the device structure.
+ * @param cb Pointer to the GPIO callback structure.
+ * @param pins Pin mask for the interrupt.
+ */
+static void npm1100_chg_interrupt(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+    /* gpio_pin_get_dt() returns LOGICAL level (already inverted) */
+    charging = gpio_pin_get_dt(&npm_status[0]);           		/* 1 = charging, 0 = not charging */
+
+    if (charging) {
+        gpio_pin_set_dt(&leds[1], 0);             				/* green off */
+        k_work_schedule(&charging_status_work,K_NO_WAIT);       /* start blinking immediately */
+    } else {
+        k_work_cancel_delayable(&charging_status_work);       	/* stop blink, turn blue off */
+        gpio_pin_set_dt(&leds[2], 0);
+        /* cable still in? then show solid green, will be turned off in the USB disconnect cb */
+        bool vbus_present = (usb_status != USB_DC_CONNECTED); 	/* or POWER_USB_EVT */
+        gpio_pin_set_dt(&leds[1], vbus_present);
+    }
+}
+
+/**
  * @brief Handle battery timer expiry events.
  *
  * This function is called when the battery timer expires. It submits the battery
@@ -1155,17 +1203,22 @@ static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *para
 	{
 	case USB_DC_CONNECTED:
 		k_work_submit(&usb_connect_work);
+		usb_status = USB_DC_CONNECTED; 
 		break;
 	case USB_DC_DISCONNECTED:
 		k_work_submit(&usb_disconnect_work);
+		usb_status = USB_DC_DISCONNECTED; 
+		gpio_pin_set_dt(&leds[1], 0);
 		break;
 	case USB_DC_CONFIGURED:
 		if (smf_current_state_get(SMF_CTX(&app)) != &states[STATE_CHARGING])
 		{
 			k_work_submit(&usb_connect_work);
 		}
+		usb_status = USB_DC_CONFIGURED; 
 		break;
 	default:
+		usb_status = -1; 
 		break;
 	}
 }
@@ -1881,9 +1934,8 @@ int main(void)
 
 	LOG_INF("===== Thingy Application Starting =====");
 
-	// --- Initialise Core Peripherals ---
-	// LEDs, Button GPIOs and Interrupts
-	for (int i = 0; i < 3; i++)
+	// LEDs
+	for (int i = 0; i < ARRAY_SIZE(leds); i++)
 	{
 		if (!gpio_is_ready_dt(&leds[i]))
 		{
@@ -1896,14 +1948,35 @@ int main(void)
 			if (ret)
 			{
 				LOG_ERR("Failed to configure LED%d\n", i);
-				return -1;
+				return -ret;
+			}
+		}
+	}
+	// NPM1100 PMIC status 
+	for (int i = 0; i < ARRAY_SIZE(npm_status); i++)
+	{
+		if (!gpio_is_ready_dt(&npm_status[i]))
+		{
+			LOG_ERR("NPM1100 status pin not ready");
+			return -1; 
+		}
+		else
+		{
+			ret = gpio_pin_configure_dt(&npm_status[i], GPIO_INPUT); 
+			if (ret)
+			{
+				LOG_ERR("Failed to configure NPM1100 status pin as INPUT");
+				return ret; 
 			}
 		}
 	}
 
 	LOG_INF("Step 1: GPIOs configured");
 
-	// --- Initialise Sensors ---
+	// NPM1100 Interrupt
+	gpio_pin_interrupt_configure_dt(&npm_status[0], GPIO_INT_EDGE_BOTH);
+	gpio_init_callback(&npm1100_chg_interrupts_cb_data, npm1100_chg_interrupt, BIT(npm_status[0].pin));
+	gpio_add_callback_dt(&npm_status[0], &npm1100_chg_interrupts_cb_data); 
 
 	// BMI270 (IMU)
 	bool bmi270_ret;
@@ -1918,13 +1991,8 @@ int main(void)
 		LOG_ERR("Failed to configure BMI270 interrupt as input");
 		return -1;
 	}
+	// BMI270 Interrupts
 	gpio_pin_interrupt_configure_dt(&bmi270_interrupts, GPIO_INT_EDGE_TO_ACTIVE);
-	if (ret != 0)
-	{
-		LOG_ERR("Error %d: failed to configure interrupt on %s pin %d",
-				ret, bmi270_interrupts.port->name, bmi270_interrupts.pin);
-		return -1;
-	}
 	gpio_init_callback(&bmi270_interrupts_cb_data, bmi270_int1_interrupt_triggered, BIT(bmi270_interrupts.pin));
 	gpio_add_callback_dt(&bmi270_interrupts, &bmi270_interrupts_cb_data);
 
