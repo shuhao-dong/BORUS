@@ -274,6 +274,17 @@ const struct device *const qspi_dev = DEVICE_DT_GET(DT_INST(0, nordic_qspi_nor))
 #define LOG_FILE_PATH "/lfs1/imu_log.bin" 				// File path for the log file
 #define LFS_MOUNT_POINT "/lfs1"			  				// Mount point for the file system
 
+USBD_DEVICE_DEFINE(my_usb, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)), 0x2fe3, 0x0008);
+
+USBD_DESC_LANG_DEFINE(my_lang);
+USBD_DESC_MANUFACTURER_DEFINE(my_mfr, "BORUS");
+USBD_DESC_PRODUCT_DEFINE(my_prod, "SD_Card");
+USBD_DESC_SERIAL_NUMBER_DEFINE(my_sn);
+
+USBD_DESC_CONFIG_DEFINE(cfg_desc, "MSC Configuration");
+static const uint8_t attributes = USB_SCD_SELF_POWERED;
+USBD_CONFIGURATION_DEFINE(my_cfg, attributes, 125, &cfg_desc);
+
 USBD_DEFINE_MSC_LUN(NOR, "NOR", "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
 static atomic_t flash_can_suspend = ATOMIC_INIT(0);   /* 0 = busy, 1 = OK   */
@@ -1203,31 +1214,126 @@ static void watchdog_feed(struct k_timer *timer_id)
  * @param status The new USB device status.
  * @param param Pointer to additional parameters (not used).
  */
-static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *param)
-{
-	switch (status)
+static void usbd_app_msg_cb(struct usbd_context *const ctx, const struct usbd_msg *const msg)
+{	
+	struct app_ctx *state_ctx = &app;
+	switch (msg->type)
 	{
-	case USB_DC_CONNECTED:
+	case USBD_MSG_VBUS_READY:
 		k_work_submit(&usb_connect_work);
 		usb_status = USB_DC_CONNECTED; 
 		break;
-	case USB_DC_DISCONNECTED:
+	case USBD_MSG_VBUS_REMOVED:
 		k_work_submit(&usb_disconnect_work);
 		usb_status = USB_DC_DISCONNECTED; 
 		gpio_pin_set_dt(&leds[1], 0);
 		break;
-	case USB_DC_CONFIGURED:
-		if (smf_current_state_get(SMF_CTX(&app)) != &states[STATE_CHARGING])
+	case USBD_MSG_CONFIGURATION:
+		if (smf_current_state_get(SMF_CTX(state_ctx)) != &states[STATE_CHARGING])
 		{
 			k_work_submit(&usb_connect_work);
 		}
-		usb_status = USB_DC_CONFIGURED; 
+		usb_status = USB_DC_CONFIGURED;
 		break;
 	default:
 		usb_status = -1; 
 		break;
 	}
 }
+
+static int usb_enable_now(void)
+{
+	int err;
+
+	struct usbd_desc_node *strs[] = {
+		&my_lang, &my_mfr, &my_prod, &my_sn,
+	};
+
+	// add string descriptors
+	for (size_t i = 0; i < ARRAY_SIZE(strs); ++i)
+	{
+		err = usbd_add_descriptor(&my_usb, strs[i]);
+		if (err)
+		{
+			LOG_ERR("add_descriptor [%d] failed (%d)", i, err);
+			return err;
+		}
+	}
+
+	// add one FS configuration
+	err = usbd_add_configuration(&my_usb, USBD_SPEED_FS, &my_cfg);
+	if (err)
+	{
+		LOG_ERR("add_configuration failed (%d)", err);
+		return err;
+	}
+
+	// register every class instance we have (here: MSC)
+	err = usbd_register_all_classes(&my_usb, USBD_SPEED_FS, 1); 
+	if (err)
+	{
+		LOG_ERR("register_all_classes failed (%d)", err);
+		return err;
+	}
+
+	err = usbd_msg_register_cb(&my_usb, usbd_app_msg_cb);
+	if (err)
+	{
+		LOG_ERR("Failed to register msg cb: %d", err);
+		return err; 
+	}
+	
+	err = usbd_init(&my_usb);
+	if (err)
+	{
+		LOG_ERR("Failed to initialize device support");
+		return err;
+	}
+
+	err = usbd_enable(&my_usb);
+	if (err)
+	{
+		LOG_ERR("Failed to enable usb device: %d", err);
+		return err; 
+	}
+
+	return 0; 
+}
+
+// /**
+//  * @brief Callback function for USB device status changes.
+//  *
+//  * This function is called when the USB device status changes. It handles
+//  * connection and disconnection events, as well as configuration events.
+//  *
+//  * @param status The new USB device status.
+//  * @param param Pointer to additional parameters (not used).
+//  */
+// static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *param)
+// {
+// 	switch (status)
+// 	{
+// 	case USB_DC_CONNECTED:
+// 		k_work_submit(&usb_connect_work);
+// 		usb_status = USB_DC_CONNECTED; 
+// 		break;
+// 	case USB_DC_DISCONNECTED:
+// 		k_work_submit(&usb_disconnect_work);
+// 		usb_status = USB_DC_DISCONNECTED; 
+// 		gpio_pin_set_dt(&leds[1], 0);
+// 		break;
+// 	case USB_DC_CONFIGURED:
+// 		if (smf_current_state_get(SMF_CTX(&app)) != &states[STATE_CHARGING])
+// 		{
+// 			k_work_submit(&usb_connect_work);
+// 		}
+// 		usb_status = USB_DC_CONFIGURED; 
+// 		break;
+// 	default:
+// 		usb_status = -1; 
+// 		break;
+// 	}
+// }
 
 /* -------------------- Data Preparation -------------------- */
 
@@ -2227,8 +2333,11 @@ int main(void)
 	
 	LOG_INF("Step 8: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
 
+	k_work_init(&usb_connect_work, usb_connect_work_handler);
+	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
+	
 	// USB Device Subsystem
-	ret = usb_enable(usb_dc_status_cb); // Register callback
+	ret = usb_enable_now(); // Register callback
 	if (ret)
 	{
 		LOG_ERR("Failed to enable USB: %d", ret);
@@ -2246,8 +2355,6 @@ int main(void)
 
 	// Initialise workqueue items
 	k_work_init(&battery_timeout_work, battery_timeout_work_handler);
-	k_work_init(&usb_connect_work, usb_connect_work_handler);
-	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
 	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
 	k_work_init(&scan_open_work, scan_open_work_handler);
 	k_work_init(&scan_close_work, scan_close_work_handler);
