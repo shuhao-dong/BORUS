@@ -220,6 +220,7 @@ typedef struct
 	uint8_t battery;
 	uint32_t timestamp;
 	int8_t soc_temp; 
+	uint8_t npm_status;
 } monitor_payload_t;
 
 // Unified message structure for message queue
@@ -230,7 +231,7 @@ typedef struct
 	{
 		imu_payload_t imu;
 		environment_payload_t env;
-		monitor_payload_t batt;
+		monitor_payload_t monitor;
 	} payload;
 } sensor_message_t;
 
@@ -257,9 +258,9 @@ static struct k_timer scan_close_timer; // For scan close
 #define ADV_TYPE_NONE							2				// No advertising active
 #define MAX_IMU_SAMPLES_IN_PACKET 				14				// (251 - 9)/16: 251 bytes max - 9 bytes (env, nonce, etc.), divided by IMU (16 bytes)
 #define ADV_PAYLOAD_UPDATE_INTERVAL_MS 			140				// If sample at 100Hz (10ms) * 14 samples = 140 ms 
-#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	230				// 1+2+1+1+1+16*14: see prepare packet
-#define AGGREGATED_ENC_ADV_PAYLOAD_LEN 			(1 + NONCE_LEN + AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)	// Custom type + Nonce + Payload
+#define AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE	231				// 1+2+1+1+1+1+16*14: see prepare packet
 #define NONCE_LEN 								8				// Size of the encryption nonce
+#define AGGREGATED_ENC_ADV_PAYLOAD_LEN 			(1 + NONCE_LEN + AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE)	// Custom type + Nonce + Payload
 #define SYNC_REQ_PAYLOAD_LEN 					(1 + 2)			// Custom type + Time
 #define PRESSURE_BASE_HPA_X10 					8500 			// Base offset in hPa x 10
 #define TEMPERATURE_LOW_LIMIT 					30   			// -30 degree as the lowest temperature of interest
@@ -301,6 +302,7 @@ typedef struct
 	uint32_t timestamp;
 	uint8_t battery;
 	int8_t soctemp; 
+	uint8_t npm_status; 
 } ble_packet_t;
 
 // Buffer for dynamic manufacturer data in advertisement
@@ -854,7 +856,7 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
  * This function reads the initial battery voltage and queues it to the
  * message queue for processing.
  */
-static void queue_initial_battery_level(void)
+static void queue_initial_monitoring_info(void)
 {
 	int batt_mV = battery_sample();
 	if (batt_mV < 0)
@@ -864,13 +866,14 @@ static void queue_initial_battery_level(void)
 	}
 
 	int soc_temp = temperature_measure();
-
+	uint8_t npm_err_status = gpio_pin_get_dt(&npm_status[1]); // Read NPM1100 ERR status pin
 	uint8_t batt_8bit = (uint8_t)(batt_mV / BATTERY_MV_TO_8BIT_SCALE_FACTOR); 
 
 	sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
-	msg.payload.batt.battery = batt_8bit;
-	msg.payload.batt.timestamp = k_uptime_get_32();
-	msg.payload.batt.soc_temp = soc_temp; 
+	msg.payload.monitor.battery = batt_8bit;
+	msg.payload.monitor.timestamp = k_uptime_get_32();
+	msg.payload.monitor.soc_temp = soc_temp; 
+	msg.payload.monitor.npm_status = npm_err_status; // Store NPM1100 ERR status
 
 	if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 	{
@@ -878,7 +881,8 @@ static void queue_initial_battery_level(void)
 	}
 	else
 	{
-		LOG_INF("Step 4.2: Queued initial monitor info, battery @ %d mV, SoC @ %d degreeC", batt_mV, soc_temp);
+		LOG_INF("Step 4.2: Queued initial monitor info, battery @ %d mV, SoC @ %d degreeC, npm1100 @ %d", 
+			batt_mV, soc_temp, npm_err_status);
 	}
 }
 
@@ -1002,14 +1006,16 @@ static void battery_timeout_work_handler(struct k_work *work)
 
 	int batt_mV = battery_sample();
 	int soc_temp = temperature_measure(); 
+	uint8_t npm_err_status = gpio_pin_get_dt(&npm_status[1]); // Read NPM1100 ERR status pin
 
 	if (batt_mV >= 0)
 	{ 	// Check for valid reading
 		uint8_t batt_8bit = (uint8_t)(batt_mV / BATTERY_MV_TO_8BIT_SCALE_FACTOR); 
 		sensor_message_t msg = {.type = SENSOR_MSG_TYPE_MONITOR};
-		msg.payload.batt.battery = batt_8bit;
-		msg.payload.batt.timestamp = k_uptime_get_32();
-		msg.payload.batt.soc_temp = soc_temp; 
+		msg.payload.monitor.battery = batt_8bit;
+		msg.payload.monitor.timestamp = k_uptime_get_32();
+		msg.payload.monitor.soc_temp = soc_temp; 
+		msg.payload.monitor.npm_status = npm_err_status; // Store NPM1100 ERR status
 
 		if (k_msgq_put(&sensor_message_queue, &msg, K_NO_WAIT) != 0)
 		{
@@ -1277,6 +1283,9 @@ void prepare_aggregated_packet(const ble_packet_t *data,
 
 	// SoC temperature 
 	buffer[offset++] = data->soctemp; // 1 byte
+
+	// NPM1100 ERR status
+	buffer[offset++] = data->npm_status; // 1 byte
 
 	// Number of IMU samples in this batch
 	buffer[offset++] = num_imu_samples; // 1 byte
@@ -1684,12 +1693,13 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				break;
 			case SENSOR_MSG_TYPE_MONITOR:
-				current_sensor_state.battery = received_msg.payload.batt.battery;
-				current_sensor_state.soctemp = received_msg.payload.batt.soc_temp; 
+				current_sensor_state.battery = received_msg.payload.monitor.battery;
+				current_sensor_state.soctemp = received_msg.payload.monitor.soc_temp; 
+				current_sensor_state.npm_status = received_msg.payload.monitor.npm_status; 
 
-				if (received_msg.payload.batt.timestamp > current_sensor_state.timestamp)
+				if (received_msg.payload.monitor.timestamp > current_sensor_state.timestamp)
 				{
-					current_sensor_state.timestamp = received_msg.payload.batt.timestamp;
+					current_sensor_state.timestamp = received_msg.payload.monitor.timestamp;
 				}
 				break;
 			default:
@@ -2131,7 +2141,7 @@ int main(void)
 	LOG_INF("Step 6: Bluetooth enabled");
 
 	// Push initial battery pct to queue
-	queue_initial_battery_level();
+	queue_initial_monitoring_info();
 
 	ret = create_sensor_ext_adv_set();
 	if (ret)
