@@ -68,7 +68,7 @@ LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
 /* -------------------- Setting subsystem for Encryption and Watchdog -------------------- */
 
-#define BORUS_SETTINGS_PATH_WDT	"borus/state/wdt_cnt" // Save nonce in NVM, allow reboot
+#define BORUS_SETTINGS_PATH_WDT	"borus/state/wdt_cnt"
 #define BORUS_SETTINGS_PATH_NONCE "borus/state/nonce_ctr"
 #define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
 
@@ -1471,8 +1471,6 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
  */
 static int settings_handle_nonce_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
-	LOG_DBG("Settings handler entered for key: %s (len: %d)", name ? name : "NULL", len);
-
 	const char *next;
 	int ret;
 

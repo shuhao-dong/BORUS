@@ -9,6 +9,7 @@
 
 / {
 	chosen {
+		zephyr,uart-mcumgr = &cdc_acm_uart0; 
 		zephyr,bt-hci-ipc = &ipc0;
 		zephyr,bt-hci = &bt_hci_ipc0;
 		nordic,pm-ext-flash = &mx25r64;
@@ -204,9 +205,22 @@
 	};
 };
 
+&uart0 {
+	/* Disabled by default */
+	current-speed = <115200>;
+	status = "disabled";
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
 zephyr_udc0: &usbd {
 	compatible = "nordic,nrf-usbd";
 	status = "okay";
+
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart"; 
+	};
 };
 
 /* Include default memory partition configuration file */
