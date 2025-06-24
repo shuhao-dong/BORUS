@@ -39,6 +39,9 @@ The torus53 board definition files are located in the `boards/nordic/torus53` di
 4. Building and Running
 ********************
 
+Currently, there is an issue related to TFM in NCS v3.0.2 that when enabled, the code size becomes siginificantly huge that will cause overflow. Therefore, build with non-secure option 
+should be avoided until fix. 
+
 4.1 Flash via VS Code NRF Extension
 -----------------------------------
 The nRF Connect Extension in VSCode is recommended to build and test the code.

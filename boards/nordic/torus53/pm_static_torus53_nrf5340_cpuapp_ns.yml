@@ -1,3 +1,14 @@
+littlefs_storage:
+  region: external_flash
+  address: 0x120000
+  size: 0x6e0000
+  label: "lfs_storage"
+  affiliation: disk
+  extra_params:
+    disk_cache_size: 0x1000
+    disk_name: NOR
+    disk_read_only: 0x0
+    disk_sector_size: 0x200
 mcuboot:
   address: 0x0
   region: flash_primary
@@ -67,6 +78,9 @@ external_flash:
   size: 0x6e0000
   device: MX25R64
   region: external_flash
+  orig_span: &id003
+  - littlefs_storage
+  span: *id003
 pcd_sram:
   address: 0x20000000
   size: 0x2000
