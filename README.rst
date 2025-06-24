@@ -70,8 +70,8 @@ Remember the serial number from the USB device with PID and VID 0001:0001. Then 
 
 To enumerate the USB device as a USB DFU class in order to perform DFU. Once the project has been built, you will need two files to flash both Application core and Network core::
 
-    dfu-util -s <serial number> -a 1 -D <~/build/BORUS/zephyr/zephyr.signed.bin>  # For the application core
-    dfu-util -s <serial number> -a 1 -D <~/build/b0n_mcuboot_ipc_radio.signed.bin> # For the network core
+    dfu-util -s <serial number> -a 1 -D <~/build/BORUS/zephyr/zephyr.signed.bin>          # For the application core
+    dfu-util -s <serial number> -a 1 -D <~/build/signed_by_mcuboot_and_b0_ipc_radio.bin>  # For the network core
 
 For the two image swap mechanism, always download the NEW firmware to alt 1.
 
