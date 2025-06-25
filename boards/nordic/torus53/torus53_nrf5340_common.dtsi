@@ -9,7 +9,6 @@
 
 / {
 	chosen {
-		zephyr,uart-mcumgr = &cdc_acm_uart0; 
 		zephyr,bt-hci-ipc = &ipc0;
 		zephyr,bt-hci = &bt_hci_ipc0;
 		nordic,pm-ext-flash = &mx25r64;
@@ -217,10 +216,6 @@
 zephyr_udc0: &usbd {
 	compatible = "nordic,nrf-usbd";
 	status = "okay";
-
-	cdc_acm_uart0: cdc_acm_uart0 {
-		compatible = "zephyr,cdc-acm-uart"; 
-	};
 };
 
 /* Include default memory partition configuration file */
