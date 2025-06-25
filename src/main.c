@@ -278,8 +278,8 @@ const struct device *const qspi_dev = DEVICE_DT_GET(DT_INST(0, nordic_qspi_nor))
 USBD_DEVICE_DEFINE(my_usb, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)), 0x2fe3, 0x0008);
 
 USBD_DESC_LANG_DEFINE(my_lang);
-USBD_DESC_MANUFACTURER_DEFINE(my_mfr, "BORUS");
-USBD_DESC_PRODUCT_DEFINE(my_prod, "SD_Card");
+USBD_DESC_MANUFACTURER_DEFINE(my_mfr, "TORUS53");
+USBD_DESC_PRODUCT_DEFINE(my_prod, "BORUS");
 USBD_DESC_SERIAL_NUMBER_DEFINE(my_sn);
 
 USBD_DESC_CONFIG_DEFINE(cfg_desc, "MSC Configuration");
@@ -532,14 +532,14 @@ static void stop_all_timers_and_scans(struct app_ctx *ctx)
 static void state_init_entry(void *o)
 {
     struct app_ctx *ctx = o; // Cast the generic object pointer to our context type
-    LOG_DBG("SMF: Entering STATE_INIT");
+    LOG_INF("SMF: Entering STATE_INIT");
     stop_all_timers_and_scans(ctx);
 }
 
 static void state_home_entry(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_DBG("SMF: Entering STATE_HOME_ADVERTISING");
+    LOG_INF("SMF: Entering STATE_HOME_ADVERTISING");
     set_imu_rate(true);
     ctx->missed_sync_responses = 0;
     ctx->sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
@@ -559,7 +559,7 @@ static void state_home_entry(void *o)
 static void state_home_exit(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_DBG("SMF: Exiting STATE_HOME_ADVERTISING");
+    LOG_INF("SMF: Exiting STATE_HOME_ADVERTISING");
 	enum pm_device_state st;
 	pm_device_state_get(qspi_dev, &st);
 	if (st == PM_DEVICE_STATE_SUSPENDED)
@@ -576,7 +576,7 @@ static void state_home_exit(void *o)
 static void state_away_entry(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_DBG("SMF: Entering STATE_AWAY_LOGGING");
+    LOG_INF("SMF: Entering STATE_AWAY_LOGGING");
     set_imu_rate(false);
     stop_all_advertising(ctx);
 	/* ----- This needs to be replaced by BMP390 -----*/
@@ -593,7 +593,7 @@ static void state_away_entry(void *o)
 static void state_away_exit(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_DBG("SMF: Exiting STATE_AWAY_LOGGING");
+    LOG_INF("SMF: Exiting STATE_AWAY_LOGGING");
 	/* ----- This needs to be replaced by BMP390 -----*/
 	int ret = pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_RESUME);
 	if (ret)
@@ -607,14 +607,14 @@ static void state_away_exit(void *o)
 static void state_charging_entry(void *o)
 {
     struct app_ctx *ctx = o;
-    LOG_DBG("SMF: Entering STATE_CHARGING");
+    LOG_INF("SMF: Entering STATE_CHARGING");
     stop_all_timers_and_scans(ctx);
 }
 
 static void state_charging_exit(void *o)
 {
     ARG_UNUSED(o);
-    LOG_DBG("SMF: Exiting STATE_CHARGING");
+    LOG_INF("SMF: Exiting STATE_CHARGING");
 }
 
 /**
@@ -630,7 +630,6 @@ static int create_sensor_ext_adv_set(void)
 		LOG_ERR("Failed to create sensor extended adv set: %d", err);
 		return err;
 	}
-	LOG_DBG("Sensor extended adv. set created");
 	return 0;
 }
 
@@ -645,8 +644,6 @@ static int create_sensor_ext_adv_set(void)
  */
 static void set_imu_rate(bool high_rate)
 {
-	LOG_DBG("Setting IMU rate to %s", high_rate ? "HIGH" : "LOW");
-
 	bmi270_acc_config_t *acc_cfg = high_rate ? &bmi270_acc_config_high : &bmi270_acc_config_low;
 	bmi270_gyr_config_t *gyr_cfg = high_rate ? &bmi270_gyr_config_high : &bmi270_gyr_config_low;
 
@@ -664,29 +661,6 @@ static int setup_scan_filter(void)
 
 	// Clearn any previous filter entries
 	bt_le_filter_accept_list_clear();
-
-	LOG_DBG("Populating BLE scan filter accept list:");
-
-	// Convert string address to bt_addr_le_t.
-	// We assume the target APs use public addresses ("public").
-	// If they use Random Static, use "random" or the correct type string.
-	ret = bt_addr_le_from_str(target_ap_addrs[0], "public", &addr_le);
-	if (ret)
-	{
-		LOG_ERR("Invalid address string '%s': %d", target_ap_addrs[0], ret);
-		// Decide how to handle: return error, skip, etc.
-		return ret;
-	}
-
-	// Add the parsed address to the controller's filter accept list
-	ret = bt_le_filter_accept_list_add(&addr_le);
-	if (ret && ret != -EALREADY)
-	{
-		// Ignore if already added
-		LOG_ERR("Failed to add '%s' to accept list: %d", target_ap_addrs[0], ret);
-		// Decide how to handle: return error, skip, etc.
-		// If one fails, the list might be partially populated.
-	}
 
 	ret = bt_addr_le_from_str(target_ap_addrs[1], "random", &addr_le);
 	ret = bt_le_filter_accept_list_add(&addr_le);
@@ -747,7 +721,6 @@ static void start_sensor_advertising_ext(struct app_ctx *ctx)
 		return;
 	}
 
-	LOG_DBG("Starting Sensor Data extended advertising (Custom Type 0x%02X)", SENSOR_ADV_PAYLOAD_TYPE);
 	// SENSOR_ADV_PAYLOAD_TYPE is the first byte *inside* manuf_payload_sensor
 	ret = bt_le_ext_adv_start(g_adv_sensor_ext_handle, BT_LE_EXT_ADV_START_DEFAULT);
 
@@ -778,8 +751,6 @@ static void start_sync_request_advertising(struct app_ctx *ctx)
         k_msleep(20); 
     }
 
-	LOG_DBG("Starting AWAY Scan Announcement advertising burst (Type 0x01)");
-
 	ret = bt_le_adv_start(adv_param, ad_sync_req, ARRAY_SIZE(ad_sync_req), NULL, 0);
 	if (ret && ret != -EALREADY)
 	{
@@ -791,7 +762,6 @@ static void start_sync_request_advertising(struct app_ctx *ctx)
 	}
 	else
 	{
-		LOG_DBG("AWAY Scan Announce advertising burst started");
 		atomic_set_bit(&ctx->flags, FLAG_ADV_RUNNING); 
 		atomic_set(&ctx->current_adv_type, SYNC_REQ_ADV_PAYLOAD_TYPE);
 	}
@@ -893,7 +863,7 @@ static void queue_initial_monitoring_info(void)
 	}
 	else
 	{
-		LOG_INF("Step 4.2: Queued initial monitor info, battery @ %d mV, SoC @ %d degreeC, npm1100 @ %d", 
+		LOG_INF("Queued initial monitor info, battery @ %d mV, SoC @ %d degreeC, npm1100 @ %d", 
 			batt_mV, soc_temp, npm_err_status);
 	}
 }
@@ -1206,6 +1176,7 @@ static void watchdog_feed(struct k_timer *timer_id)
 	wdt_feed(dev, wdt_channel_id);
 }
 
+#if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 /**
  * @brief Callback function for USB device status changes.
  *
@@ -1242,6 +1213,13 @@ static void usbd_app_msg_cb(struct usbd_context *const ctx, const struct usbd_ms
 	}
 }
 
+/**
+ * @brief Enable USB device support and register descriptors.
+ * 
+ * This function initializes the USB device support, adds string descriptors,
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int usb_enable_now(void)
 {
 	int err;
@@ -1300,41 +1278,42 @@ static int usb_enable_now(void)
 
 	return 0; 
 }
-
-// /**
-//  * @brief Callback function for USB device status changes.
-//  *
-//  * This function is called when the USB device status changes. It handles
-//  * connection and disconnection events, as well as configuration events.
-//  *
-//  * @param status The new USB device status.
-//  * @param param Pointer to additional parameters (not used).
-//  */
-// static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *param)
-// {
-// 	switch (status)
-// 	{
-// 	case USB_DC_CONNECTED:
-// 		k_work_submit(&usb_connect_work);
-// 		usb_status = USB_DC_CONNECTED; 
-// 		break;
-// 	case USB_DC_DISCONNECTED:
-// 		k_work_submit(&usb_disconnect_work);
-// 		usb_status = USB_DC_DISCONNECTED; 
-// 		gpio_pin_set_dt(&leds[1], 0);
-// 		break;
-// 	case USB_DC_CONFIGURED:
-// 		if (smf_current_state_get(SMF_CTX(&app)) != &states[STATE_CHARGING])
-// 		{
-// 			k_work_submit(&usb_connect_work);
-// 		}
-// 		usb_status = USB_DC_CONFIGURED; 
-// 		break;
-// 	default:
-// 		usb_status = -1; 
-// 		break;
-// 	}
-// }
+#else
+/**
+ * @brief Callback function for USB device status changes.
+ *
+ * This function is called when the USB device status changes. It handles
+ * connection and disconnection events, as well as configuration events.
+ *
+ * @param status The new USB device status.
+ * @param param Pointer to additional parameters (not used).
+ */
+static void usb_dc_status_cb(enum usb_dc_status_code status, const uint8_t *param)
+{
+	switch (status)
+	{
+	case USB_DC_CONNECTED:
+		k_work_submit(&usb_connect_work);
+		usb_status = USB_DC_CONNECTED; 
+		break;
+	case USB_DC_DISCONNECTED:
+		k_work_submit(&usb_disconnect_work);
+		usb_status = USB_DC_DISCONNECTED; 
+		gpio_pin_set_dt(&leds[1], 0);
+		break;
+	case USB_DC_CONFIGURED:
+		if (smf_current_state_get(SMF_CTX(&app)) != &states[STATE_CHARGING])
+		{
+			k_work_submit(&usb_connect_work);
+		}
+		usb_status = USB_DC_CONFIGURED; 
+		break;
+	default:
+		usb_status = -1; 
+		break;
+	}
+}
+#endif // CONFIG_USB_DEVICE_STACK
 
 /* -------------------- Data Preparation -------------------- */
 
@@ -1440,8 +1419,6 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
 
-	LOG_DBG("BMI270 handler thread started");
-
 	while (1)
 	{
 		// Wait indefinitely for the BMI270 interrupt signal
@@ -1489,9 +1466,6 @@ static void bmi270_handler_func(void *unused1, void *unused2, void *unused3)
 				{
 					LOG_WRN("BMI270 queue full");
 				}
-
-				// LOG_DBG("Timestamp: %u, Accel Z: %.2f",
-				// 	msg.payload.imu.timestamp, (double)(msg.payload.imu.imu_data[2] / 100));
 			}
 			else
 			{
@@ -1516,8 +1490,6 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	ARG_UNUSED(unused1);
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
-
-	LOG_DBG("BMP390 hanlder thread started (polling at %d ms interval)", BMP390_READ_INTERVAL);
 
 	while (1)
 	{
@@ -1549,11 +1521,6 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 			{
 				LOG_WRN("BMP390 queue full");
 			}
-
-			// LOG_DBG("Timestamp: %u, Temperature: %.2f, Pressure: %.1f",
-			// 		msg.payload.env.timestamp,
-			// 		(double)(msg.payload.env.temperature / 100),
-			// 		(double)(msg.payload.env.pressure / 10.0));
 		}
 		else
 		{
@@ -1746,8 +1713,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	ARG_UNUSED(unused1);
 	ARG_UNUSED(unused2);
 	ARG_UNUSED(unused3);
-
-	LOG_DBG("BLE Logger thread started");
 
 	struct app_ctx *ctx = &app; 
 
@@ -2033,99 +1998,96 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	// Loop continues, blocking on k_msgq_get
 }
 
-/**
- * @brief Main entry point of the application.
- *
- * This function initializes peripherals, sensors, BLE, and threads, and
- * enters the main loop.
- *
- * @return 0 on success, negative error code on failure.
- */
-int main(void)
+static int init_leds(void)
 {
-	int ret;
-
-	device_state_t initial_state = STATE_HOME_ADVERTISING;
-
-	LOG_INF("===== Thingy Application Starting =====");
-
-	// LEDs
 	for (int i = 0; i < ARRAY_SIZE(leds); i++)
 	{
 		if (!gpio_is_ready_dt(&leds[i]))
 		{
 			LOG_ERR("LED%d on pin %d is not ready\n", i, leds[i].pin);
-			return -1;
+			return -ENODEV; 
 		}
 		else
 		{
-			ret = gpio_pin_configure_dt(&leds[i], GPIO_OUTPUT_INACTIVE);
+			int ret = gpio_pin_configure_dt(&leds[i], GPIO_OUTPUT_INACTIVE);
 			if (ret)
 			{
 				LOG_ERR("Failed to configure LED%d\n", i);
-				return -ret;
+				return ret;
 			}
 		}
 	}
-	// NPM1100 PMIC status 
+	LOG_INF("Step 1: LEDs initialised"); 
+	return 0; 
+}
+
+static int init_npm_pins(void)
+{
 	for (int i = 0; i < ARRAY_SIZE(npm_status); i++)
 	{
 		if (!gpio_is_ready_dt(&npm_status[i]))
 		{
 			LOG_ERR("NPM1100 status pin not ready");
-			return -1; 
+			return -ENODEV;
 		}
 		else
 		{
-			ret = gpio_pin_configure_dt(&npm_status[i], GPIO_INPUT); 
+			int ret = gpio_pin_configure_dt(&npm_status[i], GPIO_INPUT); 
 			if (ret)
 			{
-				LOG_ERR("Failed to configure NPM1100 status pin as INPUT");
-				return ret; 
+				LOG_ERR("Failed to configure NPM1100 status pin as INPUT: %d", ret);
+				return ret;
 			}
 		}
 	}
-
-	LOG_INF("Step 1: GPIOs configured");
 
 	// NPM1100 Interrupt
 	gpio_pin_interrupt_configure_dt(&npm_status[0], GPIO_INT_EDGE_BOTH);
 	gpio_init_callback(&npm1100_chg_interrupts_cb_data, npm1100_chg_interrupt, BIT(npm_status[0].pin));
 	gpio_add_callback_dt(&npm_status[0], &npm1100_chg_interrupts_cb_data); 
 
+	LOG_INF("Step 2: PMIC status pin initialised");
+	return 0; 
+}
+
+static int init_sensor_irq(void)
+{
 	// BMI270 (IMU)
-	bool bmi270_ret;
 	if (!gpio_is_ready_dt(&bmi270_interrupts))
 	{
 		LOG_ERR("Interrupt GPIO is not ready on pin %d", bmi270_interrupts.pin);
-		return -1;
+		return -ENODEV;
 	}
-	ret = gpio_pin_configure_dt(&bmi270_interrupts, GPIO_INPUT);
+	int ret = gpio_pin_configure_dt(&bmi270_interrupts, GPIO_INPUT);
 	if (ret)
 	{
-		LOG_ERR("Failed to configure BMI270 interrupt as input");
-		return -1;
+		LOG_ERR("Failed to configure BMI270 interrupt as input: %d", ret);
+		return ret;
 	}
 	// BMI270 Interrupts
 	gpio_pin_interrupt_configure_dt(&bmi270_interrupts, GPIO_INT_EDGE_TO_ACTIVE);
 	gpio_init_callback(&bmi270_interrupts_cb_data, bmi270_int1_interrupt_triggered, BIT(bmi270_interrupts.pin));
 	gpio_add_callback_dt(&bmi270_interrupts, &bmi270_interrupts_cb_data);
 
-	LOG_INF("Step 2.1: BMI270 interrupts configured");
+	LOG_INF("Step 3: Sensor's IRQ configured"); 
+	return 0; 
+}
 
+static int bmi270_init_full(void)
+{	
 	/* Check SPI bus */
 	if (!spi_is_ready_dt(&bmi270_spi))
-	{
-		gpio_pin_toggle_dt(&leds[0]);
-		return -1;
+	{	
+		LOG_ERR("SPI bus for BMI270 is not ready"); 
+		return -ENODEV;
 	}
+
 	/* Configurations of BMI270 */
-	bmi270_ret = bmi270_init(&bmi270_ctx, &bmi270_spi);
+	bool bmi270_ret = bmi270_init(&bmi270_ctx, &bmi270_spi);
 	if (!bmi270_ret)
 	{
-		gpio_pin_toggle_dt(&leds[0]);
 		LOG_ERR("Failed to initialise BMI270 sensor");
-		return -1;
+		return -ENODEV;
 	}
 
 	bmi270_fifo_config_t bmi270_fifo_default_config = {
@@ -2140,10 +2102,8 @@ int main(void)
 		.gyr_filter = 1,
 		.ret_sensor_time = 0};
 
-	ret = bmi270_conf_fifo(&bmi270_ctx, 4096, &bmi270_fifo_default_config);
-
+	bmi270_conf_fifo(&bmi270_ctx, 4096, &bmi270_fifo_default_config);
 	bmi270_set_mode(&bmi270_ctx, BMI270_NORMAL_MODE, 1, 1);
-
 	bmi270_conf_acc(&bmi270_ctx, &bmi270_acc_config_high);
 	bmi270_conf_gyr(&bmi270_ctx, &bmi270_gyr_config_high);
 
@@ -2158,104 +2118,211 @@ int main(void)
 	};
 	bmi270_conf_interrupt(&bmi270_ctx, &int1_config, 1);
 
-	// bmi270_interrupt_config_t int1_feature_config = {
-	// 	.input_en = 0,
-	// 	.lvl = 1,
-	// 	.odb = 0,
-	// 	.output_en = 1,
-	// 	.interrupt_type.feature_int = NO_MOTION_OUT,
-	// 	.use_data = 0,
-	// 	.int_latch = 0,
-	// };
-	// bmi270_conf_interrupt(&bmi270_ctx, &int1_feature_config, 1);
+	LOG_INF("Step 4: BMI270 sensor initialised"); 
+	return 0; 
+}
 
-	bmi270_no_motion_config_t no_motion_param = {
-		.duration = 3,
-		.enable = 1,
-		.select_x = 1,
-		.select_y = 1,
-		.select_z = 1,
-		.threshold = 0x90,
-	};
-	bmi270_conf_no_motion(&bmi270_ctx, &no_motion_param);
-
-	LOG_INF("Step 2.2: BMI270 sensor feature configured");
-
+static int bmp390_init_full(void)
+{
 	// BME688 (Environmental)
 	if (!device_is_ready(bme688_dev))
 	{
 		LOG_ERR("BME688: device not ready");
-		return -1;
+		return -ENODEV;
 	}
 
-	LOG_INF("Step 3: BME688 sensor ready");
+	LOG_INF("Step 5: Environmental sensor initialised"); 
+	return 0; 
+}
 
-	// Battery voltage monitoring
-	ret = battery_measure_enable(true);
+static int battery_measure_init(void)
+{
+	int ret = battery_measure_enable(true);
 	if (ret != 0)
 	{
 		LOG_ERR("Failed to initialise battery measurement: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("Step 6: Battery monitoring enabled"); 
+	return 0;
+}
+
+static int watchdog_start(void)
+{
+	if (!device_is_ready(wdt_dev))
+	{
+		LOG_ERR("WDT device not ready");
+		return -ENODEV;
+	}
+
+	struct wdt_timeout_cfg wdt_cfg = {
+		.window = {
+			.min = 0,
+			.max = WDT_TIMEOUT_MS,
+		},
+		.callback = NULL, // Reset immediately, no callback
+		.flags = WDT_FLAG_RESET_SOC,
+	};
+
+	wdt_channel_id = wdt_install_timeout(wdt_dev, &wdt_cfg);
+	if (wdt_channel_id < 0)
+	{
+		LOG_ERR("Failed to install WDT timeout configuration: %d", wdt_channel_id);
 		return -1;
 	}
-	LOG_INF("Step 4.1: Enable battery voltage measurement");
 
-	struct fs_mount_t *mp = &lfs_mount_p;
-
-	ret = fs_mount(mp);
-	if (ret < 0)
+	int ret = wdt_setup(wdt_dev, 0);
+	if (ret)
 	{
-		LOG_ERR("LittleFS mount failed (%d). Attempting format...", ret);
+		LOG_ERR("Failed to start WDT: %d", ret);
+		return -ret;
 	}
+	wdt_feed(wdt_dev, wdt_channel_id); 
 
-	// Log FS stats if mount succeeded
+	LOG_INF("Step 7: Watchdog settup and fed");
+	return 0; 
+}
+
+void init_kernel_timers_and_work(void)
+{
+	k_timer_init(&battery_timer, (k_timer_expiry_t)battery_timer_expiry, NULL);
+	k_timer_init(&sync_check_timer, sync_check_timer_expiry, NULL);
+	k_timer_init(&scan_close_timer, scan_close_timer_expiry, NULL);
+	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
+
+	k_work_init(&usb_connect_work, usb_connect_work_handler);
+	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
+	k_work_init(&battery_timeout_work, battery_timeout_work_handler);
+	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
+	k_work_init(&scan_open_work, scan_open_work_handler);
+	k_work_init(&scan_close_work, scan_close_work_handler);
+	k_work_init(&sync_check_work, sync_check_work_handler);					// Init new work
+	k_work_init_delayable(&sync_adv_stop_work, sync_adv_stop_work_handler); // Init new delayable work
+	k_work_init_delayable(&sync_scan_trigger_work, sync_scan_trigger_handler);
+
+	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
+	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
+	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
+
+	LOG_INF("Step 8: Workqueue and timers initialised"); 
+}
+
+void init_state_machine(device_state_t initial_state)
+{
+	atomic_set(&app.flags, 0); 				// Clear all flags
+    atomic_set(&app.current_adv_type, 2); 	// '2' for idle/none
+    app.missed_sync_responses = 0;
+    app.sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
+
+    smf_set_initial(SMF_CTX(&app), &states[STATE_INIT]);	// Set the initial state of the SMF
+	smf_set_state(SMF_CTX(&app), &states[initial_state]);
+
+	queue_initial_monitoring_info();	// Push initial battery pct to queue
+
+	LOG_INF("Step 9: State machine initialised"); 
+}
+
+static int init_nvm_and_settings(void)
+{
+	int ret; 
+
+	ret = disk_access_ioctl("NOR", DISK_IOCTL_CTRL_INIT, NULL);
+	if (ret)
+	{
+		LOG_ERR("Failed to init disk: %d", ret);
+		return ret;
+	}
+	
+	struct fs_mount_t *mp = &lfs_mount_p;
+	ret = fs_mount(mp);
 	if (ret == 0)
 	{
 		struct fs_statvfs stats;
 		fs_statvfs(mp->mnt_point, &stats);
-		LOG_INF("Step 5: File system mounted, bfree = %lu", stats.f_bfree);
+		LOG_INF("File system mounted, bfree = %lu", stats.f_bfree);
+	}
+	else
+	{
+		LOG_ERR("Failed to mount file system: %d", ret);
+		return ret; 
 	}
 
-	// --- Initialise Communication ---
-	// Create a new identity to use our own random static address 
-	ret = set_custom_static_addr(wearable_static_addr); 
+	ret = settings_subsys_init();
+	if (ret)
+	{
+		LOG_ERR("Failed to initialise settings subsystem: %d", ret);
+		return ret;
+	}
+
+	ret = settings_load_subtree("borus/state");
+	if (ret && ret != -ENOENT)
+	{
+		LOG_ERR("Failed to load settings for 'borus/state': %d", ret);
+		return ret;
+	}
+
+	uint32_t rst_cause = 0;
+	hwinfo_get_reset_cause(&rst_cause);
+	hwinfo_clear_reset_cause();
+
+	if (rst_cause & RESET_WATCHDOG)
+	{
+		wdt_reboot_count ++;
+		settings_save_one(BORUS_SETTINGS_PATH_WDT, &wdt_reboot_count, sizeof(wdt_reboot_count));
+	}
+
+	if (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD)
+	{
+		gpio_pin_set_dt(&leds[0], 1);
+	}
+	
+	LOG_INF("Step 10: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
+
+	return 0; 
+}
+
+static int init_ble_full(void)
+{	
+	int	ret = set_custom_static_addr(wearable_static_addr); 
 	if (ret)
 	{
 		LOG_ERR("ID create failed: %d", ret); 
-		return -1;
+		return -ret;
 	}
 
-	// BLE
 	ret = bt_enable(NULL);
 	if (ret)
 	{
-		LOG_ERR("Failed to enable BLE stack (err: %d)\n", ret);
-		return -1;
+		LOG_ERR("Failed to enable BLE stack: %d", ret);
+		return -ret;
 	}
-
-	LOG_INF("Step 6: Bluetooth enabled");
-
-	// Push initial battery pct to queue
-	queue_initial_monitoring_info();
 
 	ret = create_sensor_ext_adv_set();
 	if (ret)
 	{
 		LOG_ERR("Failed to create sensor extended adv set: %d", ret);
-		return -1;
+		return -ret;
 	}
 
 	ret = setup_scan_filter();
 	if (ret)
 	{
 		LOG_ERR("Failed to configure scan filter accept list: %d", ret);
-		return -1;
+		return -ret;
 	}
 
-	ret = psa_crypto_init();
+	LOG_INF("Step 11: BLE enabled"); 
+	return 0; 
+}
+
+static int init_crypto(void)
+{
+	int ret = psa_crypto_init();
 	if (ret != PSA_SUCCESS)
 	{
 		LOG_ERR("Failed to initialise crypto: %d", ret);
-		return -1;
+		return ret;
 	}
 
 	// --- Import the AES Key ONCE ---
@@ -2276,134 +2343,78 @@ int main(void)
 	{
 		LOG_ERR("Failed to import AES key: %d", ret);
 		// Handle error - perhaps cannot continue securely
-		return -1;
+		return -ret;
 	}
 	psa_reset_key_attributes(&attr); // Good practice
-	LOG_INF("Step 7: AES Key Imported Successfully (ID: %u)", (unsigned int)g_aes_key_id);
 
-	ret = settings_subsys_init();
-	if (ret != 0)
-	{
-		LOG_ERR("Failed to initialise settings subsystem: %d", ret);
-		return -1;
-	}
-	else
-	{
-		LOG_DBG("Setting subsystem initialised");
-	}
+	LOG_INF("Step 12: AES Key Imported Successfully (ID: %u)", (unsigned int)g_aes_key_id);
+	return 0; 
+}
 
-	ret = settings_load_subtree("borus/state");
-	if (ret == 0)
-	{
-		LOG_DBG("Settings loaded successfully");
-	}
-	else if (ret == -ENOENT)
-	{
-		LOG_DBG("No 'bours/state' settings found in NVS. Using default = 0");
-	}
-	else
-	{
-		LOG_ERR("Failed to load settings for 'borus/state': %d", ret);
-	}
+/**
+ * @brief Main entry point of the application.
+ *
+ * This function initializes peripherals, sensors, BLE, and threads, and
+ * enters the main loop.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int main(void)
+{
+	int ret;
+	device_state_t initial_state = STATE_HOME_ADVERTISING;
 
-	uint32_t rst_cause = 0;
-	hwinfo_get_reset_cause(&rst_cause);
-	hwinfo_clear_reset_cause();
+	/* ─── Phase-0: basic board I/O ───────────────────────── */
 
-	if (rst_cause & RESET_WATCHDOG)
-	{
-		wdt_reboot_count ++;
-		settings_save_one(BORUS_SETTINGS_PATH_WDT, &wdt_reboot_count, sizeof(wdt_reboot_count));
-	}
+	init_leds(); 			/* LEDs + error indication */
+	init_npm_pins(); 		/* PMIC status + interrupt */
+	init_sensor_irq(); 		/* BMI270 INT pin          */
 
-	if (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD)
-	{
-		gpio_pin_set_dt(&leds[0], 1);
-	}
-	
-	LOG_INF("Step 8: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
+	/* ─── Phase-1: sensor & peripheral drivers ───────────── */
 
-	// --- Initialise Timers ---
-	k_timer_init(&battery_timer, (k_timer_expiry_t)battery_timer_expiry, NULL);
-	k_timer_init(&sync_check_timer, sync_check_timer_expiry, NULL);
-	k_timer_init(&scan_close_timer, scan_close_timer_expiry, NULL);
+	bmi270_init_full();
+	bmp390_init_full(); 
+	battery_measure_init(); 
 
-	// Initialise workqueue items
-	k_work_init(&usb_connect_work, usb_connect_work_handler);
-	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
-	k_work_init(&battery_timeout_work, battery_timeout_work_handler);
-	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
-	k_work_init(&scan_open_work, scan_open_work_handler);
-	k_work_init(&scan_close_work, scan_close_work_handler);
-	k_work_init(&sync_check_work, sync_check_work_handler);					// Init new work
-	k_work_init_delayable(&sync_adv_stop_work, sync_adv_stop_work_handler); // Init new delayable work
-	k_work_init_delayable(&sync_scan_trigger_work, sync_scan_trigger_handler);
+	/* ─── Phase-2: watchdog – keep it early for safety ───── */
 
-	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
+	watchdog_start();
 
-	LOG_INF("Step 9: Timers and WQ initialized and Battery timer started");
+	/* ─── Phase-3: timers / work-queue objects ───────────── */
 
-	/* Watchdog initialisation */
-	if (!device_is_ready(wdt_dev))
-	{
-		LOG_ERR("WDT device not ready");
-		return -1;
-	}
+	init_kernel_timers_and_work(); 
 
-	struct wdt_timeout_cfg wdt_cfg = {
-		.window = {
-			.min = 0,
-			.max = WDT_TIMEOUT_MS,
-		},
-		.callback = NULL, // Reset immediately, no callback
-		.flags = WDT_FLAG_RESET_SOC,
-	};
+	/* ─── Phase-4: radio stack & BLE objects ─────────────── */
 
-	wdt_channel_id = wdt_install_timeout(wdt_dev, &wdt_cfg);
-	if (wdt_channel_id < 0)
-	{
-		LOG_ERR("Failed to install WDT timeout configuration: %d", wdt_channel_id);
-		return -1;
-	}
+	init_ble_full(); 
 
-	ret = wdt_setup(wdt_dev, 0);
-	if (ret)
-	{
-		LOG_ERR("Failed to start WDT: %d", ret);
-		return -1;
-	}
-	wdt_feed(wdt_dev, wdt_channel_id); 
-	LOG_INF("Step 10: Watchdog set (timeout %d ms)", WDT_TIMEOUT_MS); 
+	/* ─── Phase-5: state-machine object ──────────────────── */
 
-	// --- Initial State ---
-	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
-	atomic_set(&app.flags, 0); // Clear all flags
-    atomic_set(&app.current_adv_type, 2); // '2' for idle/none
-    app.missed_sync_responses = 0;
-    app.sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
+	init_state_machine(initial_state); 
 
-	// Set the initial state of the SMF. This will call state_init_entry().
-    smf_set_initial(SMF_CTX(&app), &states[STATE_INIT]);
-	smf_set_state(SMF_CTX(&app), &states[initial_state]);
+	/* ─── Phase-6: non-volatile storage & settings ───────── */
 
-	// Initialise disk for MSC
-	ret = disk_access_ioctl("NOR", DISK_IOCTL_CTRL_INIT, NULL);
-	if (ret)
-	{
-		LOG_ERR("Failed to init disk: %d", ret);
-	}
-	LOG_INF("Step 11: Disk access granted for MSC");
+	init_nvm_and_settings(); 
 
-	// USB Device Subsystem
-	ret = usb_enable_now(); // Register callback
+	/* ─── Phase-7: crypto / keys (may depend on settings) ── */
+
+	init_crypto(); 
+
+	/* ─── Phase-8: USB LAST (after SMF + disk) ───────────── */
+#if defined(CONFIG_USB_DEVICE_STACK_NEXT)	
+	ret = usb_enable_now(); 
+#else
+	ret = usb_enable(usb_dc_status_cb);
+#endif
 	if (ret)
 	{
 		LOG_ERR("Failed to enable USB: %d", ret);
 		initial_state = STATE_HOME_ADVERTISING; // If USB fails, we are not charging
+		return ret; 
 	}
-	LOG_INF("Step 12: USB callback registered");
 
-	// Initialise the filter engine and gait analysis engine
+	/* ─── Phase-9: Advanced features ─────────────---------- */
+
 	dsp_filters_init(); 
 	gait_init(); 
 
@@ -2414,10 +2425,6 @@ int main(void)
 		k_msleep(250);
 		gpio_pin_set_dt(&leds[i], 0);
 	}
-
-	k_timer_init(&wdt_feed_timer, (k_timer_expiry_t)watchdog_feed, NULL);
-	k_timer_user_data_set(&wdt_feed_timer, (void *)wdt_dev);
-	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
 
 	// --- Create Threads ---
 	k_tid_t tid;
@@ -2436,8 +2443,6 @@ int main(void)
 					K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
 					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
 	k_thread_name_set(tid, "ble_log"); 
-
-	LOG_INF("Entering main loop (idle)");
 
 	power_down_unused_ram(); 
 
