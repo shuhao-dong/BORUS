@@ -63,6 +63,7 @@
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/pm/device.h>
 #include "ram_pwrdn.h"
+#include <zephyr/storage/disk_access.h>
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
@@ -2203,27 +2204,16 @@ int main(void)
 	ret = fs_mount(mp);
 	if (ret < 0)
 	{
-		LOG_WRN("LittleFS mount failed (%d). Attempting format...", ret);
+		LOG_ERR("LittleFS mount failed (%d). Attempting format...", ret);
 	}
-	else
-	{
-		LOG_DBG("LittleFS mounted on %s", mp->mnt_point);
-	}
+
 	// Log FS stats if mount succeeded
 	if (ret == 0)
 	{
 		struct fs_statvfs stats;
-		if (fs_statvfs(mp->mnt_point, &stats) == 0)
-		{
-			LOG_DBG("%s: bsize = %lu ; frsize = %lu ;"
-					" blocks = %lu ; bfree = %lu",
-					mp->mnt_point,
-					stats.f_bsize, stats.f_frsize,
-					stats.f_blocks, stats.f_bfree);
-		}
+		fs_statvfs(mp->mnt_point, &stats);
+		LOG_INF("Step 5: File system mounted, bfree = %lu", stats.f_bfree);
 	}
-
-	LOG_INF("Step 5: File system mounted");
 
 	// --- Initialise Communication ---
 	// Create a new identity to use our own random static address 
@@ -2333,27 +2323,14 @@ int main(void)
 	
 	LOG_INF("Step 8: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
 
-	k_work_init(&usb_connect_work, usb_connect_work_handler);
-	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
-	
-	// USB Device Subsystem
-	ret = usb_enable_now(); // Register callback
-	if (ret)
-	{
-		LOG_ERR("Failed to enable USB: %d", ret);
-		initial_state = STATE_HOME_ADVERTISING; // If USB fails, we are not charging
-	}
-	else
-	{
-		LOG_INF("Step 9: USB callback registered");
-	}
-
 	// --- Initialise Timers ---
 	k_timer_init(&battery_timer, (k_timer_expiry_t)battery_timer_expiry, NULL);
 	k_timer_init(&sync_check_timer, sync_check_timer_expiry, NULL);
 	k_timer_init(&scan_close_timer, scan_close_timer_expiry, NULL);
 
 	// Initialise workqueue items
+	k_work_init(&usb_connect_work, usb_connect_work_handler);
+	k_work_init(&usb_disconnect_work, usb_disconnect_work_handler);
 	k_work_init(&battery_timeout_work, battery_timeout_work_handler);
 	k_work_init(&scan_found_ap_work, scan_found_ap_work_handler);
 	k_work_init(&scan_open_work, scan_open_work_handler);
@@ -2364,7 +2341,7 @@ int main(void)
 
 	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
 
-	LOG_INF("Step 10: Timers and WQ initialized and Battery timer started");
+	LOG_INF("Step 9: Timers and WQ initialized and Battery timer started");
 
 	/* Watchdog initialisation */
 	if (!device_is_ready(wdt_dev))
@@ -2396,7 +2373,7 @@ int main(void)
 		return -1;
 	}
 	wdt_feed(wdt_dev, wdt_channel_id); 
-	LOG_INF("Step 11: Watchdog set (timeout %d ms)", WDT_TIMEOUT_MS); 
+	LOG_INF("Step 10: Watchdog set (timeout %d ms)", WDT_TIMEOUT_MS); 
 
 	// --- Initial State ---
 	// Start assuming HOME, scanner/USB callback will correct quickly if needed.
@@ -2407,9 +2384,26 @@ int main(void)
 
 	// Set the initial state of the SMF. This will call state_init_entry().
     smf_set_initial(SMF_CTX(&app), &states[STATE_INIT]);
-	LOG_DBG("Transitioning to determined initial state: %d", initial_state);
 	smf_set_state(SMF_CTX(&app), &states[initial_state]);
 
+	// Initialise disk for MSC
+	ret = disk_access_ioctl("NOR", DISK_IOCTL_CTRL_INIT, NULL);
+	if (ret)
+	{
+		LOG_ERR("Failed to init disk: %d", ret);
+	}
+	LOG_INF("Step 11: Disk access granted for MSC");
+
+	// USB Device Subsystem
+	ret = usb_enable_now(); // Register callback
+	if (ret)
+	{
+		LOG_ERR("Failed to enable USB: %d", ret);
+		initial_state = STATE_HOME_ADVERTISING; // If USB fails, we are not charging
+	}
+	LOG_INF("Step 12: USB callback registered");
+
+	// Initialise the filter engine and gait analysis engine
 	dsp_filters_init(); 
 	gait_init(); 
 
