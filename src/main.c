@@ -286,7 +286,7 @@ USBD_DESC_SERIAL_NUMBER_DEFINE(my_sn);
 USBD_DESC_CONFIG_DEFINE(cfg_desc, "MSC Configuration");
 static const uint8_t attributes = USB_SCD_SELF_POWERED;
 USBD_CONFIGURATION_DEFINE(my_cfg, attributes, 125, &cfg_desc);
-#endif 
+#endif // CONFIG_USB_DEVICE_STACK
 
 USBD_DEFINE_MSC_LUN(NOR, "NOR", "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
