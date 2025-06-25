@@ -11,7 +11,7 @@
 #define BMI270_WR_LEN   256
 #define BMI270_INTER_WRITE_DELAY_US     1000
 
-LOG_MODULE_REGISTER(BMI270, LOG_LEVEL_DBG); 
+LOG_MODULE_REGISTER(BMI270, LOG_LEVEL_INF); 
 
 const uint8_t bmi270_config_file[] = {
     0xc8, 0x2e, 0x00, 0x2e, 0x80, 0x2e, 0x3d, 0xb1, 0xc8, 0x2e, 0x00, 0x2e, 0x80, 0x2e, 0x91, 0x03, 0x80, 0x2e, 0xbc,
@@ -766,6 +766,48 @@ static void bmi270_gyr_convert_raw(struct sensor_value *val, int64_t raw_value, 
 
 /* ------------------------------------------------------------------------------------------------------------------- */
 
+int bmi270_lock_spi_interface(BMI270_Context *ctx)
+{
+    uint8_t nv;
+    int ret;
+
+    /* 1. Read current value ----------------------------------------- */
+    ret = bmi270_reg_read(ctx, BMI270_REG_NV_CONF, &nv, 1);
+    if (ret) {
+        LOG_ERR("NV_CONF read failed (%d)", ret);
+        return ret;
+    }
+
+    /* 2. If already set, nothing to do ------------------------------ */
+    if (nv & BMI270_NV_CONF_SPI_EN) {
+        LOG_DBG("NV_CONF.spi_en already = 1 (0x%02X)", nv);
+        return 0;
+    }
+
+    /* 3. Set bit 4 and write back ----------------------------------- */
+    nv |= BMI270_NV_CONF_SPI_EN;
+
+    ret = bmi270_reg_write(ctx, BMI270_REG_NV_CONF, &nv, 1);
+    if (ret) {
+        LOG_ERR("NV_CONF write failed (%d)", ret);
+        return ret;
+    }
+
+    /* 4. Give the part a few µs to latch the new primary IF --------- */
+    k_busy_wait(50);                    /* t_IF_SW = 40 ns min        */
+
+    LOG_DBG("BMI270 locked to SPI (NV_CONF = 0x%02X)", nv);
+    return 0;
+}
+
+static int bmi270_soft_reset(BMI270_Context *ctx)
+{
+    uint8_t cmd = 0xB6;
+    bmi270_reg_write(ctx, BMI270_REG_CMD, &cmd, 1);
+    k_msleep(2);
+    return 0; 
+}
+
 /**
  * @brief Initialise BMI270 sensor 
  * 
@@ -785,7 +827,20 @@ bool bmi270_init(BMI270_Context *ctx, const struct spi_dt_spec *spec){
     /* Interface selection - for SPI only */
     ret = bmi270_use_spi(ctx); 
     if (ret != 0){
+        LOG_ERR("Failed to use SPI mode");
         return false;
+    }
+
+    ret = bmi270_soft_reset(ctx); 
+    if (ret != 0) {
+        LOG_ERR("Failed to reset");
+        return false;
+    }
+
+    ret = bmi270_lock_spi_interface(ctx);
+    if (ret) {
+        LOG_ERR("Failed to lock SPI");
+        return false; 
     }
 
     /* Check if the sensor has already been initialised */
@@ -861,8 +916,8 @@ bool bmi270_init(BMI270_Context *ctx, const struct spi_dt_spec *spec){
             LOG_ERR("Initialisation Failed! Status: 0x%02X", values);
             return false;
         }
-    
-        LOG_INF("BMI270 initialised"); 
+
+        LOG_DBG("BMI270 initialised"); 
         return true; 
     }
 }
@@ -907,7 +962,7 @@ int bmi270_conf_fifo(BMI270_Context *ctx, uint16_t watermark, bmi270_fifo_config
         return ret;
     }
     
-    LOG_INF("BMI270 FIFO configuration successful");
+    LOG_DBG("BMI270 FIFO configuration successful");
     return 0; 
 }
 
@@ -934,7 +989,7 @@ int bmi270_conf_acc(BMI270_Context *ctx, bmi270_acc_config_t *config){
         LOG_ERR("Failed to configure accelerometer @0x%02X", BMI270_REG_ACC_CONF);
         return ret;
     }
-    LOG_INF("BMI270 accelerometer configuration successful"); 
+    LOG_DBG("BMI270 accelerometer configuration successful"); 
     return 0; 
 }
 
@@ -961,7 +1016,7 @@ int bmi270_conf_gyr(BMI270_Context *ctx, bmi270_gyr_config_t *config){
         LOG_ERR("Failed to configure gyroscope @0x%02X", BMI270_REG_GYR_CONF);
         return ret;
     }
-    LOG_INF("BMI270 gyroscope configuration successful");
+    LOG_DBG("BMI270 gyroscope configuration successful");
     return 0; 
 }
 
@@ -999,7 +1054,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1);
         /* Configure acc and gyr to performance mode - (typ.) 970uA */
         bmi270_conf_pwr(ctx, &bmi270_performance_mode); 
-        LOG_INF("BMI270 configured to performance mode");
+        LOG_DBG("BMI270 configured to performance mode");
         break;
     case BMI270_NORMAL_MODE:
         /* Disable advanced power save mode */
@@ -1007,7 +1062,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1); 
         /* Configure acc and gyr to normal mode - (typ.) 685uA */
         bmi270_conf_pwr(ctx, &bmi270_normal_mode); 
-        LOG_INF("BMI270 configured to normal mode");
+        LOG_DBG("BMI270 configured to normal mode");
         break;
     case BMI270_LOW_POWER_MODE:
         /* Disable temperature and aux sensor */
@@ -1018,7 +1073,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1); 
         /* Configure acc and gyr to low power mode - (typ.) 420uA */
         bmi270_conf_pwr(ctx, &bmi270_low_power_mode);
-        LOG_INF("BMI270 configured to low power mode: gyro and acc enabled");
+        LOG_DBG("BMI270 configured to low power mode: gyro and acc enabled");
         break;
     case BMI270_SUSPEND_MODE:
         /* Check if all sensors are disabled */
@@ -1031,7 +1086,7 @@ void bmi270_set_mode(BMI270_Context *ctx, BMI270_PowerMode mode, bool acc_enable
         bmi270_reg_write(ctx, BMI270_REG_PWR_CONF, &value, 1); 
         /* Disable all sensors - (typ.) 3.5uA */
         bmi270_enable_sensor(ctx, 0, 0, 0, 0);
-        LOG_INF("BMI270 configured to suspend mode: all sensors disabled"); 
+        LOG_DBG("BMI270 configured to suspend mode: all sensors disabled"); 
         break;
     default:
         break;
@@ -1130,22 +1185,30 @@ int bmi270_conf_no_motion(BMI270_Context *ctx, bmi270_no_motion_config_t *config
     uint16_t duration, threshold;
     uint8_t nomo_param[4];
     uint8_t nomo_page = 2; 
+    uint8_t default_page = 0; 
 
-    /* Check if the duration setting is too long -> 163*50=8150 */
-    duration = (config->duration) * 50; 
-    if (duration > 8150){
-        LOG_ERR("Duration exceeds the maximum allowed: 163s");
+    // Duration is in 20ms steps
+    duration = config->duration;
+    if (duration > 0x1FFF) { // 13-bit value
+        LOG_ERR("No-motion duration exceeds maximum");
         return -1; 
     }
-    /* Check if the threshold is too big -> 1000mg * 2=2000*/
-    threshold = (config->threshold) * 2; 
-    if (threshold > 2000){
-        LOG_ERR("Threshold exceeds the maximum allowed: 1000mg");
+
+    // The threshold value passed in the struct should be the raw register value.
+    // The datasheet default is 0x90 for 70mg.
+    threshold = config->threshold; 
+    if (threshold > 0x7FF){ // 11-bit value
+        LOG_ERR("No-motion threshold exceeds maximum");
         return -1; 
     }
 
     /* Change the page number to page 2 for no motion detection */
     ret = bmi270_reg_write(ctx, BMI270_REG_FEAT_PAGE, &nomo_page, sizeof(nomo_page)); 
+    if (ret != 0) {
+        LOG_ERR("Failed to switch to feature page 2");
+        return ret;
+    }
+    k_usleep(BMI270_INTER_WRITE_DELAY_US); 
 
     /* Prepare the no motion detection parameters */
     nomo_param[0] = duration & 0xFF; 
@@ -1154,13 +1217,74 @@ int bmi270_conf_no_motion(BMI270_Context *ctx, bmi270_no_motion_config_t *config
                     config->select_y << 6 | 
                     config->select_x << 5;
     nomo_param[2] = threshold & 0xFF;
-    nomo_param[3] = ((threshold >> 8) & 0x07) | (0x6 << 3) | config->enable << 7; 
+    nomo_param[3] = ((threshold >> 8) & 0x07) | (0x06 << 3) | config->enable << 7; 
 
     ret = bmi270_reg_write(ctx, 0x30, nomo_param, sizeof(nomo_param)); 
     if (ret != 0){
         LOG_ERR("Failed to configure no-motion detection parameters");
-        return ret; 
     }
+
+    k_usleep(BMI270_INTER_WRITE_DELAY_US);
+    ret = bmi270_reg_write(ctx, BMI270_REG_FEAT_PAGE, &default_page, sizeof(default_page));
+    if (ret != 0) {
+        LOG_ERR("Failed to reset feature page to 0");
+        return ret;
+    }
+
+    return 0; 
+}
+
+int bmi270_conf_any_motion(BMI270_Context *ctx, bmi270_no_motion_config_t *config){
+    int ret = 0;
+    uint16_t duration, threshold;
+    uint8_t nomo_param[4];
+    uint8_t anymo_page = 1; 
+    uint8_t default_page = 0; 
+
+    // Duration is in 20ms steps
+    duration = config->duration;
+    if (duration > 0x1FFF) { // 13-bit value
+        LOG_ERR("No-motion duration exceeds maximum");
+        return -1; 
+    }
+
+    // The threshold value passed in the struct should be the raw register value.
+    // The datasheet default is 0x90 for 70mg.
+    threshold = config->threshold; 
+    if (threshold > 0x7FF){ // 11-bit value
+        LOG_ERR("Any motion threshold exceeds maximum");
+        return -1; 
+    }
+
+    /* Change the page number to page 2 for no motion detection */
+    ret = bmi270_reg_write(ctx, BMI270_REG_FEAT_PAGE, &anymo_page, sizeof(anymo_page)); 
+    if (ret != 0) {
+        LOG_ERR("Failed to switch to feature page 1");
+        return ret;
+    }
+    k_usleep(BMI270_INTER_WRITE_DELAY_US); 
+
+    /* Prepare the no motion detection parameters */
+    nomo_param[0] = duration & 0xFF; 
+    nomo_param[1] = ((duration >> 8) & 0x1F) | 
+                    config->select_z << 7 | 
+                    config->select_y << 6 | 
+                    config->select_x << 5;
+    nomo_param[2] = threshold & 0xFF;
+    nomo_param[3] = ((threshold >> 8) & 0x07) | (0x07 << 3) | config->enable << 7; 
+
+    ret = bmi270_reg_write(ctx, 0x3C, nomo_param, sizeof(nomo_param)); 
+    if (ret != 0){
+        LOG_ERR("Failed to configure any motion detection parameters");
+    }
+
+    k_usleep(BMI270_INTER_WRITE_DELAY_US);
+    ret = bmi270_reg_write(ctx, BMI270_REG_FEAT_PAGE, &default_page, sizeof(default_page));
+    if (ret != 0) {
+        LOG_ERR("Failed to reset feature page to 0");
+        return ret;
+    }
+
     return 0; 
 }
 
@@ -1257,7 +1381,7 @@ int bmi270_conf_interrupt(BMI270_Context *ctx, bmi270_interrupt_config_t *config
     return 0; 
 }
 
-int bmi270_read_int_status(BMI270_Context *ctx){
+uint16_t bmi270_read_int_status(BMI270_Context *ctx){
     int ret = 0;
     uint8_t int_status[2];
 
@@ -1265,8 +1389,11 @@ int bmi270_read_int_status(BMI270_Context *ctx){
     if (ret != 0){
         LOG_ERR("Failed to read interrupt status");
     }
-    LOG_INF("The interrupt status is: 0x%02X\t0x%02X", int_status[0], int_status[1]); 
-    return ret;
+    LOG_DBG("The interrupt status is: 0x%02X\t0x%02X", int_status[0], int_status[1]); 
+
+    uint16_t ret_status = (int_status[0] << 8) | (int_status[1]); 
+    
+    return ret_status;
 }
 
 uint8_t bmi270_read_fifo_length(BMI270_Context *ctx){
