@@ -69,8 +69,12 @@ LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
 /* -------------------- Setting subsystem for Encryption and Watchdog -------------------- */
 
-#define BORUS_SETTINGS_PATH_WDT	"borus/state/wdt_cnt"		// Path to save watchdog counter
-#define BORUS_SETTINGS_PATH_NONCE "borus/state/nonce_ctr"	// Path to save encryption nonce
+#define BORUS_SETTINGS_SUBTREE	"borus/state"
+#define BORUS_SETTINGS_KEY_WDT	"wdt_cnt"		// Path to save watchdog counter
+#define BORUS_SETTINGS_KEY_NONCE "nonce_ctr"	// Path to save encryption nonce
+#define BORUS_SETTINGS_PATH_WDT     BORUS_SETTINGS_SUBTREE "/" BORUS_SETTINGS_KEY_WDT
+#define BORUS_SETTINGS_PATH_NONCE   BORUS_SETTINGS_SUBTREE "/" BORUS_SETTINGS_KEY_NONCE
+
 #define NONCE_SAVE_INTERVAL	5 * 60 * 1000 					// Save nonce every 5 minutes
 #define WDT_REBOOT_NUMBER_THRESHOLD	3						// Number of watchdog reboot before indicating error
 #define WDT_TIMEOUT_MS 			10000						// Watchdog timeout
@@ -85,33 +89,47 @@ static struct k_timer wdt_feed_timer;									 // Timer for feeding the watchdog
 
 static uint8_t wdt_reboot_count;							// Hold the number of reboot count
 
-/**
- * @brief Read watchdog reboot count from settings.
- * 
- * @param name The name of the setting.
- * @param len The length of the setting value.
- * @param read_cb Callback to read the setting value.
- * @param cb_arg Argument to pass to the read callback.
- * 
- * @return int 0 on success, negative error code on failure.
- */
-static int settings_handle_wdt_cnt(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
-{
-	const char *next;
+static int borus_state_set(const char *name, size_t len,
+                           settings_read_cb read_cb, void *cb_arg)
+{	
+	ssize_t rc;
 
-	if (settings_name_steq(name, "wdt_cnt", &next) && !next)
-	{
-		if (len == sizeof(wdt_reboot_count))
-		{	
-			int ret = read_cb(cb_arg, &wdt_reboot_count, sizeof(wdt_reboot_count));
-			return (ret < 0) ? ret : 0; 
-		}
-		return -EINVAL;
-	}
-	return -ENOENT;
+    if (strcmp(name, BORUS_SETTINGS_KEY_WDT) == 0 &&
+        len == sizeof(wdt_reboot_count)) {
+		rc = read_cb(cb_arg, &wdt_reboot_count, sizeof(wdt_reboot_count));
+        return (rc < 0) ? (int)rc : 0; 
+    }
+
+    if (strcmp(name, BORUS_SETTINGS_KEY_NONCE) == 0 &&
+        len == sizeof(nonce_counter)) {
+		rc = read_cb(cb_arg, &nonce_counter, sizeof(nonce_counter));
+        return (rc < 0) ? (int)rc : 0;
+    }
+
+    return -ENOENT;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(borus_wdt, BORUS_SETTINGS_PATH_WDT, NULL, settings_handle_wdt_cnt, NULL, NULL); 
+static int borus_state_get(const char *name, char *buf, int buf_len)
+{
+    if (strcmp(name, BORUS_SETTINGS_KEY_WDT) == 0) {
+        if (buf_len < sizeof(wdt_reboot_count))
+            return -ENOMEM;
+        memcpy(buf, &wdt_reboot_count, sizeof(wdt_reboot_count));
+        return sizeof(wdt_reboot_count);
+    }
+
+    if (strcmp(name, BORUS_SETTINGS_KEY_NONCE) == 0) {
+        if (buf_len < sizeof(nonce_counter))
+            return -ENOMEM;
+        memcpy(buf, &nonce_counter, sizeof(nonce_counter));
+        return sizeof(nonce_counter);
+    }
+
+    return -ENOENT;
+}
+
+/* Register once – subtree ONLY! */
+SETTINGS_STATIC_HANDLER_DEFINE(borus_state, BORUS_SETTINGS_SUBTREE, borus_state_get, borus_state_set, NULL, NULL);
 
 /* -------------------- Thread Configurations -------------------- */
 
@@ -149,7 +167,8 @@ typedef enum
 	STATE_INIT,				// Initial state before normal operation
 	STATE_HOME_ADVERTISING, // At home, advertise sensor data
 	STATE_AWAY_LOGGING,		// Away, log sensor data
-	STATE_CHARGING			// USB connected
+	STATE_CHARGING,			// USB connected
+	STATE_FAULT,			// System fault 
 } device_state_t;
 
 // Define application-specific flags
@@ -180,14 +199,19 @@ static void state_away_entry(void *o);
 static void state_away_exit(void *o);
 static void state_charging_entry(void *o);
 static void state_charging_exit(void *o);
+static void state_fault_entry(void *o);
+static void state_fault_run(void *o); 
 
 // Define the state table
 static const struct smf_state states[] = {
-    [STATE_INIT]           = SMF_CREATE_STATE(state_init_entry, NULL, NULL, NULL, NULL),
+    [STATE_INIT]           	 = SMF_CREATE_STATE(state_init_entry, NULL, NULL, NULL, NULL),
     [STATE_HOME_ADVERTISING] = SMF_CREATE_STATE(state_home_entry, NULL, state_home_exit, NULL, NULL),
-    [STATE_AWAY_LOGGING]   = SMF_CREATE_STATE(state_away_entry, NULL, state_away_exit, NULL, NULL),
-    [STATE_CHARGING]       = SMF_CREATE_STATE(state_charging_entry, NULL, state_charging_exit, NULL, NULL),
+    [STATE_AWAY_LOGGING]   	 = SMF_CREATE_STATE(state_away_entry, NULL, state_away_exit, NULL, NULL),
+    [STATE_CHARGING]       	 = SMF_CREATE_STATE(state_charging_entry, NULL, state_charging_exit, NULL, NULL),
+	[STATE_FAULT]			 = SMF_CREATE_STATE(state_fault_entry, state_fault_run, NULL, NULL, NULL), 
 };
+
+device_state_t initial_state = STATE_HOME_ADVERTISING;
 
 static struct k_work battery_timeout_work; 	// Work item for battery timeout -> Periodic voltage reading
 static struct k_work usb_connect_work;	   	// Work item for USB connect -> CHARGING state
@@ -541,6 +565,37 @@ static void stop_all_timers_and_scans(struct app_ctx *ctx)
     if (atomic_test_and_clear_bit(&ctx->flags, FLAG_SCAN_ACTIVE)) {
         bt_le_scan_stop();
     }
+}
+
+static void state_fault_entry(void *o)
+{
+	struct app_ctx *ctx = o;
+
+	/* 1. Indicate error state by red LED */
+	gpio_pin_set_dt(&leds[0], 1);
+
+	/* 2. stop everything dangerous or power-hungry */
+	stop_all_advertising(ctx);
+	bt_le_scan_stop();
+	set_imu_rate(false); /* slow or suspend IMU */
+	battery_measure_enable(false); 
+	/* cancel timers / works if you wish */
+	k_work_cancel_delayable(&sync_adv_stop_work);
+	k_work_cancel_delayable(&sync_scan_trigger_work);
+
+	/* 3. stop feeding the watchdog so the LED stays on */
+	k_timer_stop(&wdt_feed_timer);
+
+	LOG_ERR("FAULT: watchdog rebooted %u times - device halted",
+			wdt_reboot_count);
+}
+
+static void state_fault_run(void *o)
+{
+        /* stay in deep sleep forever (or until external reset) */
+        while (1) {
+                k_sleep(K_SECONDS(60));
+        }
 }
 
 static void state_init_entry(void *o)
@@ -1558,51 +1613,7 @@ static void bmp390_handler_func(void *unused1, void *unused2, void *unused3)
 	}
 }
 
-/**
- * @brief Settings handler for loading the nonce counter.
- *
- * This function is called by the settings subsystem to load the nonce counter
- * from persistent storage.
- *
- * @param name Name of the setting.
- * @param len Length of the setting value.
- * @param read_cb Callback function to read the setting value.
- * @param cb_arg Argument for the read callback.
- * @return 0 on success, negative error code on failure.
- */
-static int settings_handle_nonce_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
-{
-	const char *next;
-	int ret;
 
-	if (settings_name_steq(name, "nonce_ctr", &next) && !next)
-	{
-		if (len != sizeof(nonce_counter))
-		{
-			LOG_ERR("Invalid size for nonce_ctr setting (%d != %d)", len, sizeof(nonce_counter));
-			return -EINVAL;
-		}
-
-		ret = read_cb(cb_arg, &nonce_counter, sizeof(nonce_counter));
-		if (ret > 0)
-		{
-			LOG_DBG("Loaded nonce_counter from NVS: %llu", nonce_counter);
-			return 0;
-		}
-		LOG_ERR("Failed to read nonce_ctr setting: %d", ret);
-		return ret;
-	}
-	return -ENOENT;
-}
-
-// Register the settings handler for the specific subtree
-SETTINGS_STATIC_HANDLER_DEFINE(
-	borus_state,
-	BORUS_SETTINGS_PATH_NONCE,
-	NULL,
-	settings_handle_nonce_set,
-	NULL,
-	NULL);
 
 /**
  * @brief Encrypt sensor data using AES-CTR mode.
@@ -2145,7 +2156,7 @@ static int bmi270_init_full(void)
 	};
 	bmi270_conf_interrupt(&bmi270_ctx, &int1_config, 1);
 
-	LOG_INF("Step 4: BMI270 sensor initialised"); 
+	LOG_INF("Step 7: BMI270 sensor initialised"); 
 	return 0; 
 }
 
@@ -2158,7 +2169,7 @@ static int bmp390_init_full(void)
 		return -ENODEV;
 	}
 
-	LOG_INF("Step 5: Environmental sensor initialised"); 
+	LOG_INF("Step 8: Environmental sensor initialised"); 
 	return 0; 
 }
 
@@ -2171,7 +2182,7 @@ static int battery_measure_init(void)
 		return ret;
 	}
 
-	LOG_INF("Step 6: Battery monitoring enabled"); 
+	LOG_INF("Step 9: Battery monitoring enabled"); 
 	return 0;
 }
 
@@ -2207,7 +2218,7 @@ static int watchdog_start(void)
 	}
 	wdt_feed(wdt_dev, wdt_channel_id); 
 
-	LOG_INF("Step 7: Watchdog settup and fed");
+	LOG_INF("Step 5: Watchdog settup and fed");
 	return 0; 
 }
 
@@ -2232,7 +2243,7 @@ void init_kernel_timers_and_work(void)
 	k_timer_start(&wdt_feed_timer, K_MSEC(WDT_FEED_INTERVAL_MS), K_MSEC(WDT_FEED_INTERVAL_MS));
 	k_timer_start(&battery_timer, BATTERY_READ_INTERVAL, BATTERY_READ_INTERVAL);
 
-	LOG_INF("Step 8: Workqueue and timers initialised"); 
+	LOG_INF("Step 6: Workqueue and timers initialised"); 
 }
 
 void init_state_machine(device_state_t initial_state)
@@ -2247,7 +2258,7 @@ void init_state_machine(device_state_t initial_state)
 
 	queue_initial_monitoring_info();	// Push initial battery pct to queue
 
-	LOG_INF("Step 9: State machine initialised"); 
+	LOG_INF("Step 11: State machine initialised"); 
 }
 
 static int init_nvm_and_settings(void)
@@ -2289,6 +2300,9 @@ static int init_nvm_and_settings(void)
 		return ret;
 	}
 
+	settings_subsys_init();
+	settings_load_subtree(BORUS_SETTINGS_SUBTREE); 
+
 	uint32_t rst_cause = 0;
 	hwinfo_get_reset_cause(&rst_cause);
 	hwinfo_clear_reset_cause();
@@ -2297,14 +2311,27 @@ static int init_nvm_and_settings(void)
 	{
 		wdt_reboot_count ++;
 		settings_save_one(BORUS_SETTINGS_PATH_WDT, &wdt_reboot_count, sizeof(wdt_reboot_count));
+	} 
+	else if (wdt_reboot_count)
+	{
+		wdt_reboot_count = 0;
+		settings_save_one(BORUS_SETTINGS_PATH_WDT, &wdt_reboot_count, sizeof(wdt_reboot_count));
 	}
 
 	if (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD)
 	{
-		gpio_pin_set_dt(&leds[0], 1);
+		initial_state = STATE_FAULT; 
 	}
-	
-	LOG_INF("Step 10: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
+
+	if (!(rst_cause & RESET_WATCHDOG) && wdt_reboot_count)
+	{
+		wdt_reboot_count = 0;
+		settings_save_one(BORUS_SETTINGS_PATH_WDT,
+						  &wdt_reboot_count,
+						  sizeof(wdt_reboot_count));
+	}
+
+	LOG_INF("Step 4: Settings loaded, nonce = %llu, watchdog boot counter = %u", nonce_counter, wdt_reboot_count);
 
 	return 0; 
 }
@@ -2339,7 +2366,7 @@ static int init_ble_full(void)
 		return -ret;
 	}
 
-	LOG_INF("Step 11: BLE enabled"); 
+	LOG_INF("Step 10: BLE enabled"); 
 	return 0; 
 }
 
@@ -2389,7 +2416,6 @@ static int init_crypto(void)
 int main(void)
 {
 	int ret;
-	device_state_t initial_state = STATE_HOME_ADVERTISING;
 
 	/* ─── Phase-0: basic board I/O ───────────────────────── */
 
@@ -2397,37 +2423,37 @@ int main(void)
 	init_npm_pins(); 		/* PMIC status + interrupt */
 	init_sensor_irq(); 		/* BMI270 INT pin          */
 
-	/* ─── Phase-1: sensor & peripheral drivers ───────────── */
+	/* ─── Phase-1: Subsystem Loading ───────────────────────── */
+	init_nvm_and_settings();
+
+	device_state_t initial_state =
+		(wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD) ? STATE_FAULT : STATE_HOME_ADVERTISING;
+
+	if (initial_state != STATE_FAULT)
+	{
+		watchdog_start();
+		init_kernel_timers_and_work();
+	}
+
+	/* ─── Phase-2: sensor & peripheral drivers ───────────── */
 
 	bmi270_init_full();
 	bmp390_init_full(); 
 	battery_measure_init(); 
 
-	/* ─── Phase-2: watchdog – keep it early for safety ───── */
-
-	watchdog_start();
-
-	/* ─── Phase-3: timers / work-queue objects ───────────── */
-
-	init_kernel_timers_and_work(); 
-
-	/* ─── Phase-4: radio stack & BLE objects ─────────────── */
+	/* ─── Phase-3: radio stack & BLE objects ─────────────── */
 
 	init_ble_full(); 
 
-	/* ─── Phase-5: state-machine object ──────────────────── */
+	/* ─── Phase-4: state-machine object ──────────────────── */
 
-	init_state_machine(initial_state); 
+	init_state_machine(initial_state);
 
-	/* ─── Phase-6: non-volatile storage & settings ───────── */
-
-	init_nvm_and_settings(); 
-
-	/* ─── Phase-7: crypto / keys (may depend on settings) ── */
+	/* ─── Phase-5: crypto / keys (may depend on settings) ── */
 
 	init_crypto(); 
 
-	/* ─── Phase-8: USB LAST (after SMF + disk) ───────────── */
+	/* ─── Phase-6: USB LAST (after SMF + disk) ───────────── */
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)	
 	ret = usb_enable_now(); 
 #else
@@ -2440,36 +2466,42 @@ int main(void)
 		return ret; 
 	}
 
-	/* ─── Phase-9: Advanced features ─────────────---------- */
+	/* ─── Phase-7: Advanced features ─────────────---------- */
 
-	dsp_filters_init(); 
-	gait_init(); 
-
-	/* LED to indicate successful initialisation sequence */
-	for (int i = 0; i < 3; i++)
+	if (initial_state != STATE_FAULT)
 	{
-		gpio_pin_set_dt(&leds[i], 1);
-		k_msleep(250);
-		gpio_pin_set_dt(&leds[i], 0);
+		dsp_filters_init();
+		gait_init();
+
+		/* LED to indicate successful initialisation sequence */
+		if (initial_state != STATE_FAULT)
+		{
+			for (int i = 0; i < 3; i++)
+			{
+				gpio_pin_set_dt(&leds[i], 1);
+				k_msleep(250);
+				gpio_pin_set_dt(&leds[i], 0);
+			}
+		}
+
+		// --- Create Threads ---
+		k_tid_t tid;
+
+		tid = k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
+							  K_THREAD_STACK_SIZEOF(bmi270_handler_stack_area), bmi270_handler_func, NULL, NULL, NULL,
+							  BMI270_HANDLER_PRIORITY, 0, K_MSEC(1000));
+		k_thread_name_set(tid, "bmi270");
+
+		tid = k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
+							  K_THREAD_STACK_SIZEOF(bmp390_handler_stack_area), bmp390_handler_func, NULL, NULL, NULL,
+							  BMP390_HANDLER_PRIORITY, 0, K_MSEC(1000));
+		k_thread_name_set(tid, "bmp390");
+
+		tid = k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
+							  K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
+							  BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
+		k_thread_name_set(tid, "ble_log");
 	}
-
-	// --- Create Threads ---
-	k_tid_t tid;
-
-	tid = k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
-					K_THREAD_STACK_SIZEOF(bmi270_handler_stack_area), bmi270_handler_func, NULL, NULL, NULL,
-					BMI270_HANDLER_PRIORITY, 0, K_MSEC(1000));
-	k_thread_name_set(tid, "bmi270"); 
-
-	tid = k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
-					K_THREAD_STACK_SIZEOF(bmp390_handler_stack_area), bmp390_handler_func, NULL, NULL, NULL,
-					BMP390_HANDLER_PRIORITY, 0, K_MSEC(1000));
-	k_thread_name_set(tid, "bmp390");
-
-	tid = k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
-					K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
-					BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
-	k_thread_name_set(tid, "ble_log"); 
 
 	power_down_unused_ram(); 
 
