@@ -69,23 +69,32 @@ LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
 /* -------------------- Setting subsystem for Encryption and Watchdog -------------------- */
 
-#define BORUS_SETTINGS_PATH_WDT	"borus/state/wdt_cnt"
-#define BORUS_SETTINGS_PATH_NONCE "borus/state/nonce_ctr"
-#define NONCE_SAVE_INTERVAL	5 * 60 * 1000 // Save nonce every 5 minutes
+#define BORUS_SETTINGS_PATH_WDT	"borus/state/wdt_cnt"		// Path to save watchdog counter
+#define BORUS_SETTINGS_PATH_NONCE "borus/state/nonce_ctr"	// Path to save encryption nonce
+#define NONCE_SAVE_INTERVAL	5 * 60 * 1000 					// Save nonce every 5 minutes
+#define WDT_REBOOT_NUMBER_THRESHOLD	3						// Number of watchdog reboot before indicating error
+#define WDT_TIMEOUT_MS 			10000						// Watchdog timeout
+#define WDT_FEED_INTERVAL_MS 	1000						// Watchdog feed interval
 
-static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; // Initialize the AES key ID
-static uint64_t nonce_counter = 0;					// Unique nonce for each BLE message
-
-#define WDT_REBOOT_NUMBER_THRESHOLD	3
-
-#define WDT_TIMEOUT_MS 			10000	// Watchdog timeout
-#define WDT_FEED_INTERVAL_MS 	1000	// Watchdog feed interval
+static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; 		// Initialize the AES key ID
+static uint64_t nonce_counter = 0;							// Unique nonce for each BLE message
 
 static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); // Get the WDT device
 static int wdt_channel_id = -1;											 // Initialize the WDT channel ID
 static struct k_timer wdt_feed_timer;									 // Timer for feeding the watchdog
 
-static uint8_t wdt_reboot_count;
+static uint8_t wdt_reboot_count;							// Hold the number of reboot count
+
+/**
+ * @brief Read watchdog reboot count from settings.
+ * 
+ * @param name The name of the setting.
+ * @param len The length of the setting value.
+ * @param read_cb Callback to read the setting value.
+ * @param cb_arg Argument to pass to the read callback.
+ * 
+ * @return int 0 on success, negative error code on failure.
+ */
 static int settings_handle_wdt_cnt(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
 	const char *next;
@@ -107,14 +116,14 @@ SETTINGS_STATIC_HANDLER_DEFINE(borus_wdt, BORUS_SETTINGS_PATH_WDT, NULL, setting
 /* -------------------- Thread Configurations -------------------- */
 
 // Stack sizes
-#define BMI270_HANDLER_STACKSIZE 	1024
-#define BMP390_HANDLER_STACKSIZE 	1024
-#define BLE_LOGGER_THREAD_STACKSIZE 1536
+#define BMI270_HANDLER_STACKSIZE 		1024
+#define BMP390_HANDLER_STACKSIZE 		1024
+#define BLE_LOGGER_THREAD_STACKSIZE		1536
 
 // Priorities (Lower number = higher priority)
-#define BMI270_HANDLER_PRIORITY 5 	// Highest sensor priority due to higher sample rate
-#define BMP390_HANDLER_PRIORITY 6 	// Medium sensor priority due to lower sample rate
-#define BLE_THREAD_PRIORITY 	7	// Lower priority tasks for BLE and logging
+#define BMI270_HANDLER_PRIORITY 		5 	// Highest sensor priority due to higher sample rate
+#define BMP390_HANDLER_PRIORITY 		6 	// Medium sensor priority due to lower sample rate
+#define BLE_THREAD_PRIORITY 			7	// Lower priority tasks for BLE and logging
 
 // Thread Stacks
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
@@ -336,7 +345,7 @@ static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN];
 
 // Legacy BLE advertisement parameters
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
-	BT_LE_ADV_OPT_USE_IDENTITY, 	// Use identity MAC for advertisement
+	BT_LE_ADV_OPT_USE_IDENTITY, 	// Use identity MAC for advertisement to allow self-configured address
 	SYNC_ADV_INTERVAL_MIN,			// Min advertisement interval (min * 0.625)
 	SYNC_ADV_INTERVAL_MAX,			// Max advertisement interval (max * 0.625), add short delay to avoid aliasing
 	NULL							// not directed, pass NULL
@@ -375,8 +384,9 @@ static const struct bt_le_scan_param scan_param = {
 static const char *target_ap_addrs[]
 	__attribute__((used))
 	= {
-	"2C:CF:67:89:E0:5D",	// Public address of the built-in RPi controller 
-	"C0:54:52:53:00:00",	// Random static address of the nrf53840dk
+	"C0:54:52:53:00:00",	// Random static address of the RPi's nrf controller
+	"C0:54:52:53:00:01",	// Random static address of the RPi's nrf controller
+	"C0:54:52:53:00:02",	// Random static address of the RPi's nrf controller
 }; 
 
 // Define wearable address
@@ -666,9 +676,22 @@ static int setup_scan_filter(void)
 	// Clearn any previous filter entries
 	bt_le_filter_accept_list_clear();
 
-	ret = bt_addr_le_from_str(target_ap_addrs[1], "random", &addr_le);
-	ret = bt_le_filter_accept_list_add(&addr_le);
+	for (size_t i = 0; i < ARRAY_SIZE(target_ap_addrs); i++)
+	{
+		ret = bt_addr_le_from_str(target_ap_addrs[i], "random", &addr_le);
+		if (ret)
+		{
+			LOG_ERR("Bad address %s: %d", target_ap_addrs[i], ret);
+			return ret;
+		}
 
+		ret = bt_le_filter_accept_list_add(&addr_le);
+		if (ret)
+		{
+			LOG_ERR("Failed to add address %s to accept list: %d", target_ap_addrs[i], ret);
+			return ret;
+		}
+	}
 	return 0;
 }
 
