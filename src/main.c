@@ -372,10 +372,12 @@ static const struct bt_le_scan_param scan_param = {
 };
 
 // Define the list of target AP addresses
-static const char *target_ap_addrs[] = {
+static const char *target_ap_addrs[]
+	__attribute__((used))
+	= {
 	"2C:CF:67:89:E0:5D",	// Public address of the built-in RPi controller 
 	"C0:54:52:53:00:00",	// Random static address of the nrf53840dk
-};
+}; 
 
 // Define wearable address
 static const char wearable_static_addr[] = "EE:54:52:53:00:00"; 
