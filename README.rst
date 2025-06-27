@@ -21,7 +21,6 @@ tested on Nordic Thingy53. Helper tools are included.
         ├── hci_usb_ext_receiver  # HCI controller firmware for nRF52840 dongle attached to RPi
         └── littlefs-fuse         # Tool to convert .bin file to .csv file
 
-
 2. Requirements
 ************
 
@@ -37,7 +36,7 @@ This firmware is tested with Thingy53 although the target of the build should be
 The torus53 board definition files are located in the `boards/nordic/torus53` directory. Attached peripherals are defined in the `torus53_nrf5340_common.dtsi` file.
 
 4. Building and Running
-********************
+***********************
 
 Currently, there is an issue related to TFM in NCS v3.0.2 that when enabled, the code size becomes siginificantly huge that will cause overflow. Therefore, build with non-secure option 
 should be avoided until fix. 
@@ -89,7 +88,7 @@ that has a nRF Connect for Desktop installed. Open the programmer app and update
 Then click Erase & write, wait until the three LEDs on the wearable flashes. 
 
 5. Read External Flash File
-************************
+****************************
 
 To extract file saved in the external flash, we use `littlefs-fuse <https://github.com/littlefs-project/littlefs-fuse>`_ 
 After setting up, navigate to littlefs-fuse, make sure to have sudo right for the following operation::
@@ -110,6 +109,7 @@ After extracting the file, you can use::
   cd ..
   umount mount
 
+
 6. Use with Extended Advertisement
 *******************************
 
@@ -126,3 +126,4 @@ To configure the static random address, you need to set the variable `wearable_s
     EE:54:52:53:00:00
 
 where the two MS-bits of the first byte must bt set to 1, this means you can choose from 0xC0 to 0xFF. The rest bytes can be selected freely. We use ASCII representation if TRS, short for TORUS, 54:52:53 as an example. The last 2 bytes can be an incrementing number or house number OR participant number OR wearable number. 
+
