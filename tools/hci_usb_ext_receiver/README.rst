@@ -12,11 +12,19 @@ board it runs on (e.g. :ref:`nrf52840dk_nrf52840` supports both BLE and USB).
 Requirements
 ************
 
-* Bluetooth stack running on the host (e.g. BlueZ). Current firmware has been tested with BlueZ version 5.72, you can confirm your BlueZ version in terminal with::
+* Bluetooth stack running on the host (e.g. BlueZ). Current firmware has been tested with BlueZ version 5.72 & 5.82, you can confirm your BlueZ version in terminal with::
   
   bluetoothctl --version
 
 * A board with Bluetooth and USB support in Zephyr. This firmware has been tested with nrf52840dk_nrf52840. 
+
+* You will need to power on the dongle controller first before you can use it. Start by checking if the usb device is successfully enumerated::
+
+  lsusb
+
+Yo
+
+
 
 Building and Running
 ********************
