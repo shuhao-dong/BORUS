@@ -18,13 +18,6 @@ Requirements
 
 * A board with Bluetooth and USB support in Zephyr. This firmware has been tested with nrf52840dk_nrf52840. 
 
-* You will need to power on the dongle controller first before you can use it. Start by checking if the usb device is successfully enumerated::
-
-  lsusb
-
-Yo
-
-
 
 Building and Running
 ********************
