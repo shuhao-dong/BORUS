@@ -8,7 +8,7 @@
  * to the external flash using littlefs and a context awareness state change.
  *
  * Author: Shuhao Dong <shuhao.dong@bristol.ac.uk>
- * Version: v0.2.0
+ * Version: v0.3.0
  *
  * Date: 16/04/2025
  *
@@ -17,8 +17,9 @@
  * 	- Added data encryption for BLE sensor data pakcet (type 0x00) with self-built Nonce
  * 	- Added time sync request packet (type 0x01) to achieve at-home check
  *  - Implemented extended advertisement for sensor data packet to allow high sample rate
+ *  - Added zephyr SMF to manage state transition of the wearable
  * 
- * This is only for torus53 board
+ * This is only for torus53 board and can be build with Nordic Thingy53
  */
 
 #include <stdio.h>
