@@ -64,6 +64,7 @@
 #include <zephyr/pm/device.h>
 #include "ram_pwrdn.h"
 #include <zephyr/storage/disk_access.h>
+#include <zephyr/sys/poweroff.h>
 
 LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 
@@ -200,7 +201,6 @@ static void state_away_exit(void *o);
 static void state_charging_entry(void *o);
 static void state_charging_exit(void *o);
 static void state_fault_entry(void *o);
-static void state_fault_run(void *o); 
 
 // Define the state table
 static const struct smf_state states[] = {
@@ -208,10 +208,11 @@ static const struct smf_state states[] = {
     [STATE_HOME_ADVERTISING] = SMF_CREATE_STATE(state_home_entry, NULL, state_home_exit, NULL, NULL),
     [STATE_AWAY_LOGGING]   	 = SMF_CREATE_STATE(state_away_entry, NULL, state_away_exit, NULL, NULL),
     [STATE_CHARGING]       	 = SMF_CREATE_STATE(state_charging_entry, NULL, state_charging_exit, NULL, NULL),
-	[STATE_FAULT]			 = SMF_CREATE_STATE(state_fault_entry, state_fault_run, NULL, NULL, NULL), 
+	[STATE_FAULT]			 = SMF_CREATE_STATE(state_fault_entry, NULL, NULL, NULL, NULL), 
 };
 
-device_state_t initial_state = STATE_HOME_ADVERTISING;
+static volatile bool ble_enabled = false;
+static volatile bool usb_enabled = false; 
 
 static struct k_work battery_timeout_work; 	// Work item for battery timeout -> Periodic voltage reading
 static struct k_work usb_connect_work;	   	// Work item for USB connect -> CHARGING state
@@ -571,31 +572,23 @@ static void state_fault_entry(void *o)
 {
 	struct app_ctx *ctx = o;
 
+	LOG_ERR("FAULT: watchdog rebooted %u times - device halted", wdt_reboot_count);
+
+	if(usb_enabled) usb_disable();
+	if(ble_enabled) bt_disable(); 
+
 	/* 1. Indicate error state by red LED */
 	gpio_pin_set_dt(&leds[0], 1);
+	k_sleep(K_SECONDS(3));
+	gpio_pin_set_dt(&leds[0], 0); 
 
 	/* 2. stop everything dangerous or power-hungry */
-	stop_all_advertising(ctx);
-	bt_le_scan_stop();
-	set_imu_rate(false); /* slow or suspend IMU */
-	battery_measure_enable(false); 
-	/* cancel timers / works if you wish */
-	k_work_cancel_delayable(&sync_adv_stop_work);
-	k_work_cancel_delayable(&sync_scan_trigger_work);
+	stop_all_timers_and_scans(ctx); 
 
 	/* 3. stop feeding the watchdog so the LED stays on */
 	k_timer_stop(&wdt_feed_timer);
-
-	LOG_ERR("FAULT: watchdog rebooted %u times - device halted",
-			wdt_reboot_count);
-}
-
-static void state_fault_run(void *o)
-{
-        /* stay in deep sleep forever (or until external reset) */
-        while (1) {
-                k_sleep(K_SECONDS(60));
-        }
+	
+	sys_poweroff(); 
 }
 
 static void state_init_entry(void *o)
@@ -2036,6 +2029,13 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	// Loop continues, blocking on k_msgq_get
 }
 
+/**
+ * @brief Initialize the LEDs GPIO.
+ * 
+ * This function initializes the GPIO pins for the LEDs defined in the device tree.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int init_leds(void)
 {
 	for (int i = 0; i < ARRAY_SIZE(leds); i++)
@@ -2059,6 +2059,14 @@ static int init_leds(void)
 	return 0; 
 }
 
+/**
+ * @brief Initialize the NPM1100 PMIC status pins.
+ * 
+ * This function initializes the GPIO pins for the NPM1100 PMIC status defined in the device tree.
+ * It also sets up an interrupt callback for the PMIC status pin.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int init_npm_pins(void)
 {
 	for (int i = 0; i < ARRAY_SIZE(npm_status); i++)
@@ -2088,6 +2096,13 @@ static int init_npm_pins(void)
 	return 0; 
 }
 
+/**
+ * @brief Initialize the sensor IRQ for BMI270.
+ * 
+ * This function initializes the GPIO pin for the BMI270 interrupt and sets up an interrupt callback.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int init_sensor_irq(void)
 {
 	// BMI270 (IMU)
@@ -2111,6 +2126,14 @@ static int init_sensor_irq(void)
 	return 0; 
 }
 
+/**
+ * @brief Initialize the SPI bus for BMI270.
+ * 
+ * This function checks if the SPI bus is ready and initializes the BMI270 sensor.
+ * It also configures the FIFO and sets the sensor mode and configurations.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int bmi270_init_full(void)
 {	
 	/* Check SPI bus */
@@ -2160,6 +2183,13 @@ static int bmi270_init_full(void)
 	return 0; 
 }
 
+/**
+ * @brief Initialize the BME688 environmental sensor.
+ * 
+ * This function checks if the BME688 device is ready and initializes it.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int bmp390_init_full(void)
 {
 	// BME688 (Environmental)
@@ -2173,6 +2203,13 @@ static int bmp390_init_full(void)
 	return 0; 
 }
 
+/**
+ * @brief Initialize the battery measurement.
+ * 
+ * This function enables the battery measurement and logs the status.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int battery_measure_init(void)
 {
 	int ret = battery_measure_enable(true);
@@ -2186,6 +2223,14 @@ static int battery_measure_init(void)
 	return 0;
 }
 
+/**
+ * @brief Start the watchdog timer.
+ * 
+ * This function initializes and starts the watchdog timer with a specified timeout.
+ * It also installs a timeout configuration and feeds the watchdog to prevent reset.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int watchdog_start(void)
 {
 	if (!device_is_ready(wdt_dev))
@@ -2214,7 +2259,7 @@ static int watchdog_start(void)
 	if (ret)
 	{
 		LOG_ERR("Failed to start WDT: %d", ret);
-		return -ret;
+		return ret;
 	}
 	wdt_feed(wdt_dev, wdt_channel_id); 
 
@@ -2222,6 +2267,11 @@ static int watchdog_start(void)
 	return 0; 
 }
 
+/**
+ * @brief Initialize kernel timers and workqueue.
+ * 
+ * This function initializes various kernel timers and work items used in the application.
+ */
 void init_kernel_timers_and_work(void)
 {
 	k_timer_init(&battery_timer, (k_timer_expiry_t)battery_timer_expiry, NULL);
@@ -2246,7 +2296,12 @@ void init_kernel_timers_and_work(void)
 	LOG_INF("Step 6: Workqueue and timers initialised"); 
 }
 
-void init_state_machine(device_state_t initial_state)
+/**
+ * @brief Initialize the state machine.
+ * 
+ * This function initializes the state machine with the initial state and clears all flags.
+ */
+void init_state_machine(void)
 {
 	atomic_set(&app.flags, 0); 				// Clear all flags
     atomic_set(&app.current_adv_type, 2); 	// '2' for idle/none
@@ -2254,13 +2309,18 @@ void init_state_machine(device_state_t initial_state)
     app.sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
 
     smf_set_initial(SMF_CTX(&app), &states[STATE_INIT]);	// Set the initial state of the SMF
-	smf_set_state(SMF_CTX(&app), &states[initial_state]);
-
-	queue_initial_monitoring_info();	// Push initial battery pct to queue
 
 	LOG_INF("Step 11: State machine initialised"); 
 }
 
+/**
+ * @brief Initialize the NVM and settings subsystem.
+ * 
+ * This function initializes the disk access, mounts the file system, initializes
+ * the settings subsystem, and handles reset causes and watchdog reboot counts.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int init_nvm_and_settings(void)
 {
 	int ret; 
@@ -2293,15 +2353,12 @@ static int init_nvm_and_settings(void)
 		return ret;
 	}
 
-	ret = settings_load_subtree("borus/state");
+	ret = settings_load_subtree(BORUS_SETTINGS_SUBTREE);
 	if (ret && ret != -ENOENT)
 	{
 		LOG_ERR("Failed to load settings for 'borus/state': %d", ret);
 		return ret;
 	}
-
-	settings_subsys_init();
-	settings_load_subtree(BORUS_SETTINGS_SUBTREE); 
 
 	uint32_t rst_cause = 0;
 	hwinfo_get_reset_cause(&rst_cause);
@@ -2318,11 +2375,6 @@ static int init_nvm_and_settings(void)
 		settings_save_one(BORUS_SETTINGS_PATH_WDT, &wdt_reboot_count, sizeof(wdt_reboot_count));
 	}
 
-	if (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD)
-	{
-		initial_state = STATE_FAULT; 
-	}
-
 	if (!(rst_cause & RESET_WATCHDOG) && wdt_reboot_count)
 	{
 		wdt_reboot_count = 0;
@@ -2336,40 +2388,57 @@ static int init_nvm_and_settings(void)
 	return 0; 
 }
 
+/**
+ * @brief Initialize the BLE stack and set up advertising.
+ * 
+ * This function initializes the BLE stack, sets a custom static address,
+ * creates an extended advertising set for sensor data, and configures the scan filter accept list.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int init_ble_full(void)
 {	
 	int	ret = set_custom_static_addr(wearable_static_addr); 
 	if (ret)
 	{
 		LOG_ERR("ID create failed: %d", ret); 
-		return -ret;
+		return ret;
 	}
 
 	ret = bt_enable(NULL);
 	if (ret)
 	{
 		LOG_ERR("Failed to enable BLE stack: %d", ret);
-		return -ret;
+		return ret;
 	}
+	ble_enabled = true; 
 
 	ret = create_sensor_ext_adv_set();
 	if (ret)
 	{
 		LOG_ERR("Failed to create sensor extended adv set: %d", ret);
-		return -ret;
+		return ret;
 	}
 
 	ret = setup_scan_filter();
 	if (ret)
 	{
 		LOG_ERR("Failed to configure scan filter accept list: %d", ret);
-		return -ret;
+		return ret;
 	}
 
 	LOG_INF("Step 10: BLE enabled"); 
 	return 0; 
 }
 
+/**
+ * @brief Initialize the crypto subsystem and import the AES key.
+ * 
+ * This function initializes the PSA crypto subsystem, imports a static AES key,
+ * and sets up the key attributes for encryption and decryption.
+ * 
+ * @return 0 on success, negative error code on failure.
+ */
 static int init_crypto(void)
 {
 	int ret = psa_crypto_init();
@@ -2397,7 +2466,7 @@ static int init_crypto(void)
 	{
 		LOG_ERR("Failed to import AES key: %d", ret);
 		// Handle error - perhaps cannot continue securely
-		return -ret;
+		return ret;
 	}
 	psa_reset_key_attributes(&attr); // Good practice
 
@@ -2414,102 +2483,88 @@ static int init_crypto(void)
  * @return 0 on success, negative error code on failure.
  */
 int main(void)
-{
-	int ret;
+{	
+	int ret; 
 
-	/* ─── Phase-0: basic board I/O ───────────────────────── */
+	/* Initialise the SMF first with STATUS_INIT */
+	init_state_machine();
 
-	init_leds(); 			/* LEDs + error indication */
-	init_npm_pins(); 		/* PMIC status + interrupt */
-	init_sensor_irq(); 		/* BMI270 INT pin          */
+	ret = init_leds(); 			/* LEDs + error indication */
+	if (ret) goto fail; 
+	ret = init_npm_pins(); 		/* PMIC status + interrupt */
+	if (ret) goto fail; 
+	ret = init_sensor_irq(); 		/* BMI270 INT pin          */
+	if (ret) goto fail; 
 
 	/* ─── Phase-1: Subsystem Loading ───────────────────────── */
-	init_nvm_and_settings();
+	ret = init_nvm_and_settings();
+	if (ret) goto fail; 
 
-	device_state_t initial_state =
-		(wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD) ? STATE_FAULT : STATE_HOME_ADVERTISING;
+	device_state_t initial_state = (wdt_reboot_count >= WDT_REBOOT_NUMBER_THRESHOLD) ? STATE_FAULT : STATE_HOME_ADVERTISING;
 
 	if (initial_state != STATE_FAULT)
-	{
-		watchdog_start();
+	{	 
+		ret = watchdog_start();
+		if (ret) goto fail; 
 		init_kernel_timers_and_work();
-	}
+		ret = bmi270_init_full();
+		if (ret) goto fail; 
+		ret = bmp390_init_full();
+		if (ret) goto fail; 
+		ret = battery_measure_init();
+		if (ret) goto fail; 
+		ret = init_crypto();
+		if (ret) goto fail; 
+		ret = init_ble_full();
+		if (ret) goto fail; 
+		queue_initial_monitoring_info();
+		smf_set_state(SMF_CTX(&app), &states[initial_state]);
 
-	/* ─── Phase-2: sensor & peripheral drivers ───────────── */
-
-	bmi270_init_full();
-	bmp390_init_full(); 
-	battery_measure_init(); 
-
-	/* ─── Phase-3: radio stack & BLE objects ─────────────── */
-
-	init_ble_full(); 
-
-	/* ─── Phase-4: state-machine object ──────────────────── */
-
-	init_state_machine(initial_state);
-
-	/* ─── Phase-5: crypto / keys (may depend on settings) ── */
-
-	init_crypto(); 
-
-	/* ─── Phase-6: USB LAST (after SMF + disk) ───────────── */
-#if defined(CONFIG_USB_DEVICE_STACK_NEXT)	
-	ret = usb_enable_now(); 
+#if defined(CONFIG_USB_DEVICE_STACK_NEXT)
+		ret = usb_enable_now();
 #else
-	ret = usb_enable(usb_dc_status_cb);
+		ret = usb_enable(usb_dc_status_cb);
+		usb_enabled = true; 
 #endif
-	if (ret)
-	{
-		LOG_ERR("Failed to enable USB: %d", ret);
-		initial_state = STATE_HOME_ADVERTISING; // If USB fails, we are not charging
-		return ret; 
-	}
-
-	/* ─── Phase-7: Advanced features ─────────────---------- */
-
-	if (initial_state != STATE_FAULT)
-	{
+		if (ret) goto fail; 
 		dsp_filters_init();
 		gait_init();
 
-		/* LED to indicate successful initialisation sequence */
-		if (initial_state != STATE_FAULT)
+		for (int i = 0; i < 3; i++)
 		{
-			for (int i = 0; i < 3; i++)
-			{
-				gpio_pin_set_dt(&leds[i], 1);
-				k_msleep(250);
-				gpio_pin_set_dt(&leds[i], 0);
-			}
+			gpio_pin_set_dt(&leds[i], 1);
+			k_msleep(250);
+			gpio_pin_set_dt(&leds[i], 0);
 		}
 
-		// --- Create Threads ---
 		k_tid_t tid;
-
 		tid = k_thread_create(&bmi270_handler_thread_data, bmi270_handler_stack_area,
 							  K_THREAD_STACK_SIZEOF(bmi270_handler_stack_area), bmi270_handler_func, NULL, NULL, NULL,
 							  BMI270_HANDLER_PRIORITY, 0, K_MSEC(1000));
 		k_thread_name_set(tid, "bmi270");
-
 		tid = k_thread_create(&bmp390_handler_thread_data, bmp390_handler_stack_area,
 							  K_THREAD_STACK_SIZEOF(bmp390_handler_stack_area), bmp390_handler_func, NULL, NULL, NULL,
 							  BMP390_HANDLER_PRIORITY, 0, K_MSEC(1000));
 		k_thread_name_set(tid, "bmp390");
-
 		tid = k_thread_create(&ble_logger_thread_data, ble_logger_stack_area,
 							  K_THREAD_STACK_SIZEOF(ble_logger_stack_area), ble_logger_func, NULL, NULL, NULL,
 							  BLE_THREAD_PRIORITY, 0, K_MSEC(1000));
 		k_thread_name_set(tid, "ble_log");
 	}
+	else
+	{
+		smf_set_state(SMF_CTX(&app), &states[initial_state]);
+	}
 
 	power_down_unused_ram(); 
 
 	while (1)
-	{
-		// Main thread can sleep or handle very low priority tasks
+	{	
 		k_sleep(K_MINUTES(5));
 	}
 
-	return 0;
+fail:
+	smf_set_state(SMF_CTX(&app), &states[STATE_FAULT]); 
+
+	return 0; 
 }
