@@ -1,4 +1,5 @@
 1. Overview
+1. Overview
 ********
 
 This is the project code for TORUS using Zephyr RTOS to collect sensor data and 
