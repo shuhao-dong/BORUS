@@ -1,5 +1,4 @@
 1. Overview
-1. Overview
 ********
 
 This is the project code for TORUS using Zephyr RTOS to collect sensor data and 
@@ -21,7 +20,6 @@ tested on Nordic Thingy53. Helper tools are included.
     └── tools                     # Helper tools
         ├── hci_usb_ext_receiver  # HCI controller firmware for nRF52840 dongle attached to RPi
         └── littlefs-fuse         # Tool to convert .bin file to .csv file
-
 
 2. Requirements
 ************
