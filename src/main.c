@@ -346,7 +346,10 @@ USBD_CONFIGURATION_DEFINE(my_cfg, attributes, 125, &cfg_desc);
 
 USBD_DEFINE_MSC_LUN(NOR, "NOR", "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
-static atomic_t flash_can_suspend = ATOMIC_INIT(0);   		// 0 = busy, 1 = OK
+struct fs_file_t log_file; // File object for littlefs
+bool file_is_open = false; // Track if log file is currently open
+int log_write_count = 0;   // Counter for periodic sync
+static bool log_storage_full = false; // Flag to indicate storage is full
 
 /* -------------------- BLE Configurations -------------------- */
 
@@ -537,7 +540,7 @@ const struct device *const bme688_dev = DEVICE_DT_GET_ONE(bosch_bme680);
 
 /* -------------------- LittleFS Mount Configuration -------------------- */
 
-#define LOG_SYNC_THRESHOLD 15000 // Record to log before fs_sync, this tolerates 5-min data missing
+#define LOG_SYNC_THRESHOLD 7500 // Record to log before fs_sync, this tolerates 5-min data missing
 
 FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(storage);
 static struct fs_mount_t lfs_mount_p = {
@@ -628,15 +631,6 @@ static void state_home_entry(void *o)
     ctx->missed_sync_responses = 0;
     ctx->sync_check_interval_ms = SYNC_CHECK_INTERVAL_BASE_MS;
     start_sensor_advertising_ext(ctx);
-	if (atomic_cas(&flash_can_suspend, 1, 0))
-	{
-		int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_SUSPEND);
-		if (ret)
-		{
-			LOG_WRN("Failed to suspend external flash: %d", ret);
-		}
-	}
-	
     k_timer_start(&sync_check_timer, K_MSEC(ctx->sync_check_interval_ms), K_MSEC(ctx->sync_check_interval_ms));
 }
 
@@ -644,16 +638,6 @@ static void state_home_exit(void *o)
 {
     struct app_ctx *ctx = o;
     LOG_INF("SMF: Exiting STATE_HOME_ADVERTISING");
-	enum pm_device_state st;
-	pm_device_state_get(qspi_dev, &st);
-	if (st == PM_DEVICE_STATE_SUSPENDED)
-	{
-		int ret = pm_device_action_run(qspi_dev, PM_DEVICE_ACTION_RESUME);
-		if (ret)
-		{
-			LOG_WRN("Failed to resume external flash: %d", ret);
-		}
-	}
     stop_all_timers_and_scans(ctx);
 }
 
@@ -663,13 +647,6 @@ static void state_away_entry(void *o)
     LOG_INF("SMF: Entering STATE_AWAY_LOGGING");
     set_imu_rate(false);
     stop_all_advertising(ctx);
-	/* ----- This needs to be replaced by BMP390 -----*/
-	int ret = pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_SUSPEND); 
-	if (ret)
-	{
-		LOG_WRN("Failed to suspend BME688: %d", ret); 
-	}
-	/* -----------------------------------------------*/
     uint32_t jitter = sys_rand32_get() % (SYNC_CHECK_INTERVAL_BASE_MS / 4);
     k_timer_start(&sync_check_timer, K_MSEC(jitter), K_MSEC(ctx->sync_check_interval_ms));
 }
@@ -678,13 +655,6 @@ static void state_away_exit(void *o)
 {
     struct app_ctx *ctx = o;
     LOG_INF("SMF: Exiting STATE_AWAY_LOGGING");
-	/* ----- This needs to be replaced by BMP390 -----*/
-	int ret = pm_device_action_run(bme688_dev, PM_DEVICE_ACTION_RESUME);
-	if (ret)
-	{
-		LOG_WRN("Failed to resume BME688: %d", ret); 
-	}
-	/* -----------------------------------------------*/
     stop_all_timers_and_scans(ctx);
 }
 
@@ -1780,11 +1750,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 
 	uint32_t save_timer = k_uptime_get_32(); // Timer for saving nonce
 
-	struct fs_file_t log_file;			  // File object for littlefs
-	bool file_is_open = false;			  // Track if log file is currently open
-	int log_write_count = 0;			  // Counter for periodic sync
-	static bool log_storage_full = false; // Flag to indicate storage is full
-
 	fs_file_t_init(&log_file); // Initialise file object structure
 
 	while (1)
@@ -1858,7 +1823,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				file_is_open = false;
 				log_write_count = 0; // Reset sync counter
-				atomic_set(&flash_can_suspend, 1); 
 			}
 
 			bool send_adv = false;
@@ -1976,23 +1940,16 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 						}
 						fs_close(&log_file); // Close on error
 						file_is_open = false;
-						atomic_set(&flash_can_suspend, 1);
 					}
 					else if (written < sizeof(log_record))
 					{
 						LOG_WRN("Partial write to log file: %d / %u bytes", (int)written, sizeof(log_record));
 						fs_close(&log_file);
 						file_is_open = false;
-						atomic_set(&flash_can_suspend, 1);
 					}
 					else
 					{
 						log_write_count++;
-
-						// Sync periodically to flush cache to flash (e.g., every 1000 records)
-						// Adjust based on data rate and acceptable data loss on power failure
-						// LOG_DBG("Logged IMU data (%d bytes), write count: %d",
-						// 		(int)written, log_write_count);
 
 						if (log_write_count >= LOG_SYNC_THRESHOLD)
 						{
@@ -2039,7 +1996,6 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 				}
 				file_is_open = false;
 				log_write_count = 0;
-				atomic_set(&flash_can_suspend, 1);
 			}
 			if (imu_batch_count > 0)
 			{
@@ -2546,9 +2502,9 @@ int main(void)
 		ret = usb_enable_now();
 #else
 		ret = usb_enable(usb_dc_status_cb);
-		usb_enabled = true; 
 #endif
 		if (ret) goto fail; 
+		usb_enabled = true; 
 		dsp_filters_init();
 		gait_init();
 
