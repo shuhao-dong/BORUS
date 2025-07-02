@@ -72,8 +72,8 @@ LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 /* -------------------- Setting subsystem for Encryption and Watchdog -------------------- */
 
 #define BORUS_SETTINGS_SUBTREE	"borus/state"
-#define BORUS_SETTINGS_KEY_WDT	"wdt_cnt"		// Path to save watchdog counter
-#define BORUS_SETTINGS_KEY_NONCE "nonce_ctr"	// Path to save encryption nonce
+#define BORUS_SETTINGS_KEY_WDT	"wdt_cnt"					// Path to save watchdog counter
+#define BORUS_SETTINGS_KEY_NONCE "nonce_ctr"				// Path to save encryption nonce
 #define BORUS_SETTINGS_PATH_WDT     BORUS_SETTINGS_SUBTREE "/" BORUS_SETTINGS_KEY_WDT
 #define BORUS_SETTINGS_PATH_NONCE   BORUS_SETTINGS_SUBTREE "/" BORUS_SETTINGS_KEY_NONCE
 
@@ -85,12 +85,22 @@ LOG_MODULE_REGISTER(TORUS53, LOG_LEVEL_DBG);
 static psa_key_id_t g_aes_key_id = PSA_KEY_ID_NULL; 		// Initialize the AES key ID
 static uint64_t nonce_counter = 0;							// Unique nonce for each BLE message
 
-static const struct device *wdt_dev = DEVICE_DT_GET_ONE(nordic_nrf_wdt); // Get the WDT device
-static int wdt_channel_id = -1;											 // Initialize the WDT channel ID
-static struct k_timer wdt_feed_timer;									 // Timer for feeding the watchdog
+static const struct device *wdt_dev = 
+						DEVICE_DT_GET_ONE(nordic_nrf_wdt); 	// Get the WDT device
+static int wdt_channel_id = -1;								// Initialize the WDT channel ID
+static struct k_timer wdt_feed_timer;						// Timer for feeding the watchdog
 
 static uint8_t wdt_reboot_count;							// Hold the number of reboot count
 
+/**
+ * @brief Set the watchdog reboot count and nonce counter
+ * 
+ * @param name The name of the setting to set
+ * @param len The length of the value
+ * @param read_cb Callback to read the value
+ * 
+ * @return 0 on success, negative error code on failure
+ */
 static int borus_state_set(const char *name, size_t len,
                            settings_read_cb read_cb, void *cb_arg)
 {	
@@ -111,6 +121,15 @@ static int borus_state_set(const char *name, size_t len,
     return -ENOENT;
 }
 
+/**
+ * @brief Get the current watchdog reboot count and nonce counter
+ * 
+ * @param name The name of the setting to get
+ * @param buf The buffer to store the value
+ * @param buf_len The length of the buffer
+ * 
+ * @return The length of the value copied to the buffer, or an error code
+ */
 static int borus_state_get(const char *name, char *buf, int buf_len)
 {
     if (strcmp(name, BORUS_SETTINGS_KEY_WDT) == 0) {
@@ -130,40 +149,39 @@ static int borus_state_get(const char *name, char *buf, int buf_len)
     return -ENOENT;
 }
 
-/* Register once – subtree ONLY! */
+/* Register settings */
 SETTINGS_STATIC_HANDLER_DEFINE(borus_state, BORUS_SETTINGS_SUBTREE, borus_state_get, borus_state_set, NULL, NULL);
 
 /* -------------------- Thread Configurations -------------------- */
 
-// Stack sizes
+/* Stack sizes */ 
 #define BMI270_HANDLER_STACKSIZE 		1024
 #define BMP390_HANDLER_STACKSIZE 		1024
 #define BLE_LOGGER_THREAD_STACKSIZE		1536
 
-// Priorities (Lower number = higher priority)
+/* Priorities (Lower number = higher priority) */ 
 #define BMI270_HANDLER_PRIORITY 		5 	// Highest sensor priority due to higher sample rate
 #define BMP390_HANDLER_PRIORITY 		6 	// Medium sensor priority due to lower sample rate
 #define BLE_THREAD_PRIORITY 			7	// Lower priority tasks for BLE and logging
 
-// Thread Stacks
+/* Thread Stacks */ 
 K_THREAD_STACK_DEFINE(bmi270_handler_stack_area, BMI270_HANDLER_STACKSIZE);
 K_THREAD_STACK_DEFINE(bmp390_handler_stack_area, BMP390_HANDLER_STACKSIZE);
 K_THREAD_STACK_DEFINE(ble_logger_stack_area, BLE_LOGGER_THREAD_STACKSIZE);
 
-// Thread Control Blocks
+/* Thread Control Blocks */ 
 static struct k_thread bmi270_handler_thread_data;
 static struct k_thread bmp390_handler_thread_data;
 static struct k_thread ble_logger_thread_data;
 
 /* -------------------- State Machine -------------------- */
 
-static inline const struct smf_state *
-smf_current_state_get(struct smf_ctx *ctx)
+static inline const struct smf_state * smf_current_state_get(struct smf_ctx *ctx)
 {
-    return ctx->current;          /* the SMF core stores the pointer here   */
+    return ctx->current;          // the SMF core stores the pointer here
 }
 
-// Define the state structure
+/* Define the state structure */ 
 typedef enum
 {
 	STATE_INIT,				// Initial state before normal operation
@@ -173,27 +191,28 @@ typedef enum
 	STATE_FAULT,			// System fault 
 } device_state_t;
 
-// Define application-specific flags
+/* Define application-specific flags */ 
 enum app_flags {
 	FLAG_ADV_RUNNING,
 	FLAG_SCAN_ACTIVE,
 };
 
+/* Define application SMF context */
 struct app_ctx {
-	struct smf_ctx smf;	// SMF context
-	atomic_t flags;
-	uint8_t missed_sync_responses;
-	uint32_t sync_check_interval_ms;
-	atomic_t current_adv_type;
+	struct smf_ctx smf;					// SMF context
+	atomic_t flags;						// Flag for adv and scan state
+	uint8_t missed_sync_responses;		// Number of missed heartbeat check
+	uint32_t sync_check_interval_ms;	// Heartbeat check interval
+	atomic_t current_adv_type;			// Type 0: sensor, Type 1: sync
 };
-
 static struct app_ctx app;
 
+/* Forward declarations of functions used in SMF */
 static void stop_all_advertising(struct app_ctx *ctx);
 static void start_sensor_advertising_ext(struct app_ctx *ctx);
 static void set_imu_rate(bool high_rate);
 
-// Forward declarations of state functions and objects
+/* Forward declarations of state functions and objects */ 
 static void state_init_entry(void *o);
 static void state_home_entry(void *o);
 static void state_home_exit(void *o);
@@ -203,7 +222,7 @@ static void state_charging_entry(void *o);
 static void state_charging_exit(void *o);
 static void state_fault_entry(void *o);
 
-// Define the state table
+/* Define the state table */ 
 static const struct smf_state states[] = {
     [STATE_INIT]           	 = SMF_CREATE_STATE(state_init_entry, NULL, NULL, NULL, NULL),
     [STATE_HOME_ADVERTISING] = SMF_CREATE_STATE(state_home_entry, NULL, state_home_exit, NULL, NULL),
@@ -212,22 +231,24 @@ static const struct smf_state states[] = {
 	[STATE_FAULT]			 = SMF_CREATE_STATE(state_fault_entry, NULL, NULL, NULL, NULL), 
 };
 
+/* Track if ble and usb stack is enabled */
 static volatile bool ble_enabled = false;
 static volatile bool usb_enabled = false; 
 
-static struct k_work battery_timeout_work; 	// Work item for battery timeout -> Periodic voltage reading
-static struct k_work usb_connect_work;	   	// Work item for USB connect -> CHARGING state
-static struct k_work usb_disconnect_work;  	// Work item for USB disconnect -> HOME state (or chosen default)
-static struct k_work scan_found_ap_work;   	// Work item for Scan Found AP -> HOME state
-static struct k_work scan_open_work;		
-static struct k_work scan_close_work;
-static struct k_work sync_check_work;
-static struct k_work_delayable sync_adv_stop_work;
-static struct k_work_delayable sync_scan_trigger_work;	
+/* Workqueue declarations */
+static struct k_work battery_timeout_work; 				// Work item for battery timeout -> Periodic voltage reading
+static struct k_work usb_connect_work;	   				// Work item for USB connect -> CHARGING state
+static struct k_work usb_disconnect_work;  				// Work item for USB disconnect -> HOME state (or chosen default)
+static struct k_work scan_found_ap_work;   				// Work item for Scan Found AP -> HOME state
+static struct k_work scan_open_work;					// Work item for starting to scan	
+static struct k_work scan_close_work;					// Work item for stoppint to scan
+static struct k_work sync_check_work;					// Work to perform heartbeat check 
+static struct k_work_delayable sync_adv_stop_work;		// Work to stop type 0x01 packet
+static struct k_work_delayable sync_scan_trigger_work;	// Work to start heartbeat check scann
 
 /* -------------------- Message Queue for Sensor Data -------------------- */
 
-// Define message types
+/* Define message types */ 
 typedef enum
 {
 	SENSOR_MSG_TYPE_IMU,
@@ -235,14 +256,14 @@ typedef enum
 	SENSOR_MSG_TYPE_MONITOR,
 } sensor_msg_type_t;
 
-// Define payload structures: imu, environment, battery
+/* Define payload structures: imu, environment, battery */ 
 typedef struct
 {
-	int16_t imu_data[6];
-	uint32_t timestamp;
+	int16_t imu_data[6];	// IMU data: x, y, z for acc and gyr
+	uint32_t timestamp;		// SoC timestamp
 } imu_payload_t;
 
-// Environmental sensor data structure
+/* Environmental sensor data structure */ 
 typedef struct
 {
 	uint16_t temperature;	// Environmental temperature in degree C 
@@ -250,7 +271,7 @@ typedef struct
 	uint32_t timestamp;		// SoC timestamp
 } environment_payload_t;
 
-// Battery voltage data structure
+/* Battery voltage data structure */ 
 typedef struct
 {
 	uint8_t battery;		// Battery voltage in mV
@@ -259,7 +280,7 @@ typedef struct
 	uint8_t npm_status;		// PMIC error status 
 } monitor_payload_t;
 
-// Unified message structure for message queue
+/* Unified message structure for message queue */ 
 typedef struct
 {
 	sensor_msg_type_t type;
@@ -271,7 +292,7 @@ typedef struct
 	} payload;
 } sensor_message_t;
 
-// Define the message queue
+/*  Define the message queue */
 K_MSGQ_DEFINE(sensor_message_queue, sizeof(sensor_message_t), 16, 4);
 
 /* -------------------- Semaphores for Interrupts -------------------- */
@@ -307,8 +328,8 @@ static struct k_timer scan_close_timer; // For scan close
 
 const struct device *const qspi_dev = DEVICE_DT_GET(DT_INST(0, nordic_qspi_nor)); 
 
-#define LOG_FILE_PATH "/lfs1/imu_log.bin" 				// File path for the log file
-#define LFS_MOUNT_POINT "/lfs1"			  				// Mount point for the file system
+#define LOG_FILE_PATH "/lfs1/imu_log.bin" 					// File path for the log file
+#define LFS_MOUNT_POINT "/lfs1"			  					// Mount point for the file system
 
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 USBD_DEVICE_DEFINE(my_usb, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)), 0x2fe3, 0x0008);
@@ -325,7 +346,7 @@ USBD_CONFIGURATION_DEFINE(my_cfg, attributes, 125, &cfg_desc);
 
 USBD_DEFINE_MSC_LUN(NOR, "NOR", "Zephyr", "BORUS", "0.00");	// Define the USB MSC LUN
 
-static atomic_t flash_can_suspend = ATOMIC_INIT(0);   /* 0 = busy, 1 = OK   */
+static atomic_t flash_can_suspend = ATOMIC_INIT(0);   		// 0 = busy, 1 = OK
 
 /* -------------------- BLE Configurations -------------------- */
 
@@ -342,7 +363,7 @@ static atomic_t flash_can_suspend = ATOMIC_INIT(0);   /* 0 = busy, 1 = OK   */
 #define SYNC_ADV_INTERVAL_MIN			160				// Min advertise interval for time sync request advertisement: 100ms / 0.625 = 160
 #define SYNC_ADV_INTERVAL_MAX			164				// Max advertise interval for time sync request advertisement
 
-// Define BLE packet structure - Not used in real BLE packet
+/* Define BLE packet structure - Not used in real BLE packet */ 
 typedef struct
 {
 	int16_t temperature;
@@ -354,7 +375,7 @@ typedef struct
 	uint8_t npm_status; 
 } ble_packet_t;
 
-// Buffer for dynamic manufacturer data in advertisement
+/* Buffer for dynamic manufacturer data in advertisement */ 
 static uint8_t manuf_plain_aggregated[AGGREGATED_SENSOR_DATA_PLAINTEXT_SIZE];
 static uint8_t manuf_payload_sensor_aggregated[AGGREGATED_ENC_ADV_PAYLOAD_LEN];
 static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN];
@@ -369,7 +390,7 @@ static uint8_t manuf_payload_sync_req[SYNC_REQ_PAYLOAD_LEN];
  * 	- Lose device name and data flag
  */
 
-// Legacy BLE advertisement parameters
+/* Legacy BLE advertisement parameters */ 
 static const struct bt_le_adv_param *adv_param = BT_LE_ADV_PARAM(
 	BT_LE_ADV_OPT_USE_IDENTITY, 	// Use identity MAC for advertisement to allow self-configured address
 	SYNC_ADV_INTERVAL_MIN,			// Min advertisement interval (min * 0.625)
