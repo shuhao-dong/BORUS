@@ -356,7 +356,7 @@ static bool log_storage_full = false; // Flag to indicate storage is full
 #define SYNC_CHECK_INTERVAL_BASE_MS 	1 * 60 * 1000	// Period to perform an at-home check 
 #define SYNC_REQ_ADV_BURST_DURATION 	K_MSEC(250) 	// Duration to send type 0x01 advertisment
 #define X_ANNOUNCED_S 					3				// Tells the scanner I am going to scan in 3 seconds
-#define MISSES_BEFORE_AWAY 				3				// If miss 3 HB check from the RPi, consider AWAY
+#define MISSES_BEFORE_AWAY 				1				// If miss 3 HB check from the RPi, consider AWAY
 #define AWAY_BACKOFF_MAX_INTERVAL_MS	2 * 60 * 1000	// Linearly increase the scan interval while AWAY
 #define EARLY_MARGIN_MS 				500				// Guard time for scanning, plus the other half is the total scanning time
 #define LATE_MARGIN_MS 					500				// Guard time for scanning
@@ -1079,16 +1079,72 @@ static void battery_timeout_work_handler(struct k_work *work)
 }
 
 /**
+ * @brief Delete previous extracted binary file
+ * 
+ * This function will attempt to delete the binary file specified by @ref LOG_FILE_PATH if exists
+ *  
+ */
+static void delete_old_log(void)
+{
+	struct fs_dirent st;
+	int ret = fs_stat(LOG_FILE_PATH, &st);
+
+	if (!ret && st.type == FS_DIR_ENTRY_FILE)
+	{
+		LOG_INF("Deleting old log file, size=%u", (unsigned)st.size);
+
+		ret = fs_unlink(LOG_FILE_PATH);
+		if (ret)
+		{
+			LOG_ERR("Failed to erase imu_log.bin: %d", ret);
+		}
+		else
+		{
+			fs_sync(&log_file); 
+		}
+	}
+}
+
+/**
+ * @brief Clean up littlefs file system
+ * 
+ * This function will attempt to sync, close the file, and finally unmount the file system
+ */
+static void stop_logging_and_unmount(void)
+{
+    if (file_is_open) {
+        fs_sync(&log_file);
+        fs_close(&log_file);
+        file_is_open = false;
+        log_write_count = 0;
+    }
+    fs_unmount(&lfs_mount_p);        /* detach LittleFS pages from cache */
+}
+
+/**
+ * @brief Resume littlefs file system
+ * 
+ * This function will attempt to delete any existing binary file and resume file system
+ */
+static void remount_and_resume_logging(void)
+{
+    fs_mount(&lfs_mount_p);          /* make LittleFS visible again     */
+	delete_old_log(); 
+    log_storage_full = false;        /* optional: re-probe free space    */
+}
+
+/**
  * @brief Handle USB connection events.
  *
  * This function is called when the USB is connected. It transitions the device
- * to the CHARGING state.
+ * to the CHARGING state. It will unmount the file system for host copy operation.
  *
  * @param work Pointer to the work structure.
  */
 static void usb_connect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	stop_logging_and_unmount();
 	smf_set_state(SMF_CTX(&app), &states[STATE_CHARGING]); 
 }
 
@@ -1096,13 +1152,14 @@ static void usb_connect_work_handler(struct k_work *work)
  * @brief Handle USB disconnection events.
  *
  * This function is called when the USB is disconnected. It transitions the device
- * to the HOME state.
+ * to the HOME state. It will delete existing file and resume file system. 
  *
  * @param work Pointer to the work structure.
  */
 static void usb_disconnect_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
+	remount_and_resume_logging();
 	smf_set_state(SMF_CTX(&app), &states[STATE_HOME_ADVERTISING]); 
 }
 
@@ -1755,7 +1812,7 @@ static void ble_logger_func(void *unused1, void *unused2, void *unused3)
 	while (1)
 	{
 		/* Get each message from the message queue */
-		ret = k_msgq_get(&sensor_message_queue, &received_msg, K_FOREVER);
+		ret = k_msgq_get(&sensor_message_queue, &received_msg, K_MSEC(200));
 		if (ret == 0)
 		{
 			// Update the local copy of the full sensor state
