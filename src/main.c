@@ -431,16 +431,23 @@ static const struct bt_le_scan_param scan_param = {
 };
 
 // Define the list of target AP addresses
-static const char *target_ap_addrs[]
-	__attribute__((used))
-	= {
+static const char *target_ap_addrs[] __attribute__((used)) = {
 	"C0:54:52:53:00:00",	// Random static address of the RPi's nrf controller
 	"C0:54:52:53:00:01",	// Random static address of the RPi's nrf controller
 	"C0:54:52:53:00:02",	// Random static address of the RPi's nrf controller
 }; 
 
 // Define wearable address
-static const char wearable_static_addr[] = "EE:54:52:53:00:00"; 
+#define FACTORY_DATA_ADDR	PM_FACTORY_DATA_ADDRESS
+
+static char ble_addr_str[18];
+
+bool factory_data_get_ble_addr(char *out)
+{
+	memcpy(out, (void *)FACTORY_DATA_ADDR, 17);
+	out[17] = '\0'; 
+	return true;
+}
 
 /**
  * @brief Set a custom static address for the wearable device.
@@ -2433,7 +2440,20 @@ static int init_nvm_and_settings(void)
  */
 static int init_ble_full(void)
 {	
-	int	ret = set_custom_static_addr(wearable_static_addr); 
+	const char *fallback = "EE:55:55:55:00:00"; 
+	char addr_buf[18];
+
+	bool ok = factory_data_get_ble_addr(addr_buf);
+	if (ok && strlen(addr_buf) == 17)
+	{
+		strcpy(ble_addr_str, addr_buf);
+	}
+	else
+	{
+		strcpy(ble_addr_str, fallback); 
+	}
+	
+	int	ret = set_custom_static_addr(ble_addr_str); 
 	if (ret)
 	{
 		LOG_ERR("ID create failed: %d", ret); 
